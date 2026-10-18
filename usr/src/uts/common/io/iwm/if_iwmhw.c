@@ -492,6 +492,7 @@ struct iwm_runtime {
 	boolean_t touched;
 	boolean_t stopped;
 	boolean_t stop_failed;
+	boolean_t errlog_dumped;
 	boolean_t rx_started;
 	boolean_t tx_started;
 	boolean_t published;
@@ -3160,6 +3161,49 @@ iwm_notifications(struct iwm_softc *sc)
 }
 
 /* Called by the single MSI handler with sc->lock held; never sleeps. */
+/*
+ * Firmware SW_ERR: log the head of the firmware error table once per image
+ * (OpenBSD iwm_nic_error).  The table pointer is ALIVE byte 20.  Bounded
+ * register reads only; no sleeping, as this runs from the interrupt handler.
+ */
+#define	IWM_ERRLOG_WORDS	21	/* valid .. log_pc */
+
+static void
+iwm_fw_error_dump(struct iwm_softc *sc)
+{
+	struct iwm_runtime *r = sc->run;
+	uint32_t base, w[IWM_ERRLOG_WORDS];
+	uint_t i;
+
+	ASSERT(MUTEX_HELD(&sc->lock));
+	if (r->errlog_dumped || r->alive_len < 24)
+		return;
+	r->errlog_dumped = B_TRUE;
+	base = iwm_u32((const uint8_t *)r->alive_data + 20);
+	if (base < 0x800000) {
+		dev_err(sc->dip, CE_WARN, "!iwm invalid firmware error log "
+		    "pointer %08x", base);
+		return;
+	}
+	if (iwm_nic_lock(sc) != 0)
+		return;
+	iwm_wr(sc, IWM_HBUS_TARG_MEM_RADDR, base);
+	for (i = 0; i < IWM_ERRLOG_WORDS; i++)
+		w[i] = iwm_rd(sc, IWM_HBUS_TARG_MEM_RDAT);
+	iwm_nic_unlock(sc);
+	if (w[0] == 0) {
+		dev_err(sc->dip, CE_WARN, "!iwm firmware error log is empty");
+		return;
+	}
+	dev_err(sc->dip, CE_WARN, "!iwm firmware error id=%08x "
+	    "hw-status=%08x/%08x blink2=%08x ilink=%08x/%08x "
+	    "data=%08x/%08x/%08x", w[1], w[2], w[3], w[4], w[5], w[6],
+	    w[7], w[8], w[9]);
+	dev_err(sc->dip, CE_WARN, "!iwm firmware version type=%08x "
+	    "major=%08x minor=%08x hw=%08x board=%08x pc=%08x",
+	    w[15], w[16], w[17], w[18], w[19], w[20]);
+}
+
 uint_t
 iwm_active_intr(struct iwm_softc *sc, uint32_t causes, uint32_t fh)
 {
@@ -3194,8 +3238,11 @@ iwm_active_intr(struct iwm_softc *sc, uint32_t causes, uint32_t fh)
 	iwm_wr(sc, IWM_CSR_INT, causes);
 	iwm_wr(sc, IWM_CSR_FH_INT_STATUS, fh);
 	if (causes == 0xffffffff || (causes & ~IWM_RUN_MASK) != 0 ||
+	    (causes & 0xfffffff0) == 0xa5a5a5a0 ||
 	    (fh & ~(IWM_CSR_FH_INT_TX_MASK | IWM_CSR_FH_INT_RX_MASK)) != 0 ||
 	    (causes & (IWM_CSR_INT_BIT_HW_ERR | IWM_CSR_INT_BIT_SW_ERR))) {
+		if (causes & IWM_CSR_INT_BIT_SW_ERR)
+			iwm_fw_error_dump(sc);
 		r->error = EIO;
 	} else {
 		if (causes & IWM_CSR_INT_BIT_FH_TX) {
@@ -4065,7 +4112,10 @@ iwm_association_tx(struct iwm_softc *sc, mblk_t *mp, boolean_t management,
 	cmd->hdr.qid = ring->qid;
 	tx = (void *)cmd->data;
 	tx->len = LE_16(length);
-	flags = (1U << 3) | IWM_TX_CMD_FLG_BT_DIS;
+	/* Group-addressed frames are never acknowledged (OpenBSD iwm_tx). */
+	flags = IWM_TX_CMD_FLG_BT_DIS;
+	if (!(frame[4] & 1))
+		flags |= IWM_TX_CMD_FLG_ACK;
 	if (header == sizeof (struct ieee80211_frame))
 		flags |= IWM_TX_CMD_FLG_SEQ_CTL;
 	if (pad != 0) {
@@ -4073,7 +4123,7 @@ iwm_association_tx(struct iwm_softc *sc, mblk_t *mp, boolean_t management,
 		tx->offload_assist = LE_16(IWM_TX_CMD_OFFLD_PAD);
 	}
 	if (!management && (sc->ic.ic_flags & IEEE80211_F_USEPROT))
-		flags |= 1;
+		flags |= IWM_TX_CMD_FLG_PROT_REQUIRE;
 	tx->tx_flags = LE_32(flags);
 	ht = !management && !eapol && !(frame[16] & 1) &&
 	    (node->in_flags & IEEE80211_NODE_HT) != 0;
@@ -4083,8 +4133,9 @@ iwm_association_tx(struct iwm_softc *sc, mblk_t *mp, boolean_t management,
 		goto out;
 	tx->rate_n_flags = LE_32(rate_flags);
 	tx->life_time = LE_32(UINT32_MAX);
-	tx->rts_retry_limit = 60;
-	tx->data_retry_limit = management ? 60 : 15;
+	tx->rts_retry_limit = IWM_RTS_DFAULT_RETRY_LIMIT;
+	tx->data_retry_limit = management ? IWM_MGMT_DFAULT_RETRY_LIMIT :
+	    IWM_DEFAULT_TX_RETRY;
 	tx->tid_tspec = management ? 8 :
 	    (header == sizeof (struct ieee80211_qosframe) ? frame[24] & 7 : 0);
 	tx->pm_frame_timeout = LE_16(management ?
@@ -5514,6 +5565,7 @@ iwm_restart(struct iwm_softc *sc)
 	bzero(&r->response_diagnostic, sizeof (r->response_diagnostic));
 	bzero(r->alive_data, sizeof (r->alive_data));
 	r->alive_len = 0;
+	r->errlog_dumped = B_FALSE;
 	r->sched_base = 0;
 	r->tx_started = r->rx_started = r->published = B_FALSE;
 	r->image = IWM_FW_REGULAR;

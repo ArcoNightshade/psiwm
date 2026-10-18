@@ -35,12 +35,27 @@ are inferred from code and the references; none are confirmed on hardware yet.
 | F8 | Medium | No SUSPEND/RESUME, no rfkill state in link status. | OpenBSD/FreeBSD restart device on resume via init path. | 3 |
 | F9 | Low | PHY ctx fixed to 2.4 GHz/20 MHz/one chain (rxchain counts). | OpenBSD computes band, ctrl_pos, width, and static/dynamic chain counts. Needed for 5 GHz/HT40/MIMO. | 4 |
 | F10 | Low | Many raw command IDs and flags (0x08, 0x28, 0x1c, 0x4e, 0xd0, 0x77, 0xa9, `(1U << 3)` etc.) rather than named constants. Maintainability risk and makes audit harder. | Named IWM_* constants in if_iwmreg.h. | 2 |
+| F12 | Medium | Any TX response that fails the strict shape checks in `iwm_association_tx_done` (frame count != 1, `p[33]>>4 != 0`, unexpected index range) returns EPROTO, which sets `r->error` and ends the connection. A failed or retried frame should be accounted (oerrors) and reclaimed, not fatal. | OpenBSD `iwm_rx_tx_cmd` reads the status, counts errors and always reclaims the slot. | 2 |
+| F13 | Low | RTS retry limit 60 / data 15 match Linux; management retry limit was 60 (all three references use 3). | iwm_tx_fill_cmd, Linux iwl_mvm_set_tx_cmd_rate | fixed |
 | F11 | Info | Device identity gate admits only 8086:24f3, subsystem 1130, rev 3a. | OpenBSD admits by product ID and selects firmware per product. | 1/6 |
 
 Deviations:
 - D1: ICT not used (OpenBSD and FreeBSD both use ICT in non-MSI-X mode). Direct CSR_INT
   read is valid for MSI but must be verified under interrupt coalescing (OpenBSD ICT path
   has a workaround for falsely cleared bits 18/19). Needs hardware test.
+
+- D2: Scan uses UMAC scan with an explicit SCAN_CFG_CMD (0x10c), aux queue and aux station
+  (ours: `iwm_scan_configure`); OpenBSD 8000-series uses `iwm_umac_scan` without SCAN_CFG and
+  with adaptive-dwell variants chosen by firmware API flags. Ours hardcodes one request layout
+  and dwell values (10/110/44/90). Needs justification or alignment (audit queue item 4).
+
+## Fix log
+
+| Date | Finding | Change | Verified |
+|---|---|---|---|
+| 2026-10-18 | F3 | TX ACK flag now set only for unicast (`frame[4] & 1` test); named `IWM_TX_CMD_FLG_ACK` / `IWM_TX_CMD_FLG_PROT_REQUIRE` replace raw `(1U << 3)` and `1` | Source review only. NOT built, NOT tested on hardware. |
+| 2026-10-18 | F13 | Management retry limit 60 -> 3; named retry constants | Source review only. |
+| 2026-10-18 | F1 (partial) | SW_ERR now dumps the firmware error table (`iwm_fw_error_dump`, once per image); 0xa5a5a5a0 dead-device pattern treated as error; `iwm_runtime_acquire` now stops and restarts a runtime that has failed, unless a connection owns it. RF-kill handling NOT done yet. | Source review only. |
 
 ## Remaining audit queue (TODO)
 

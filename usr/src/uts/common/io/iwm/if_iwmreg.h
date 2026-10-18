@@ -446,9 +446,13 @@ CTASSERT(sizeof (struct iwm_rx_packet) == 8);
 
 #define IWM_HBUS_BASE	(0x400)
 
+#define IWM_HBUS_TARG_MEM_RADDR     (IWM_HBUS_BASE+0x00c)
+
 #define IWM_HBUS_TARG_MEM_WADDR     (IWM_HBUS_BASE+0x010)
 
 #define IWM_HBUS_TARG_MEM_WDAT      (IWM_HBUS_BASE+0x018)
+
+#define IWM_HBUS_TARG_MEM_RDAT      (IWM_HBUS_BASE+0x01c)
 
 #define IWM_HBUS_TARG_PRPH_WADDR    (IWM_HBUS_BASE+0x044)
 
@@ -1160,10 +1164,17 @@ struct iwm_tx_path_flush_cmd_v1 {
 } __attribute__((__packed__));
 
 /* API36 TX prefix. Encryption and aggregation remain host-owned/disabled. */
+#define	IWM_TX_CMD_FLG_PROT_REQUIRE	(1 << 0)
+#define	IWM_TX_CMD_FLG_ACK		(1 << 3)
 #define	IWM_TX_CMD_FLG_BT_DIS		(1 << 12)
 #define	IWM_TX_CMD_FLG_SEQ_CTL		(1 << 13)
 #define	IWM_TX_CMD_FLG_MH_PAD		(1 << 20)
 #define	IWM_TX_CMD_OFFLD_PAD		(1 << 13)
+
+/* Retry limits as in OpenBSD/FreeBSD/Linux (mgmt) and Linux (RTS, data). */
+#define	IWM_DEFAULT_TX_RETRY		15
+#define	IWM_MGMT_DFAULT_RETRY_LIMIT	3
+#define	IWM_RTS_DFAULT_RETRY_LIMIT	60
 
 struct iwm_tx_cmd {
 	uint16_t len;

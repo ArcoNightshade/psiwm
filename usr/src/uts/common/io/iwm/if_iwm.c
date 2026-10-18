@@ -704,6 +704,7 @@ iwm_operation_exit(struct iwm_softc *sc)
 int
 iwm_runtime_acquire(struct iwm_softc *sc, enum iwm_runtime_owner owner)
 {
+	uint_t held = 0;
 	int error;
 
 	ASSERT(sc->operation != IWM_OP_NONE);
@@ -713,8 +714,23 @@ iwm_runtime_acquire(struct iwm_softc *sc, enum iwm_runtime_owner owner)
 		return (ENXIO);
 	if (sc->runtime_stop_error != 0)
 		return (sc->runtime_stop_error);
-	if (sc->runtime_started && (error = iwm_runtime_status(sc)) != 0)
-		return (error);
+	if (sc->runtime_started && (error = iwm_runtime_status(sc)) != 0) {
+		/*
+		 * Firmware/hardware error: recover by a full stop and restart
+		 * (OpenBSD restarts via init_task).  A live connection owns the
+		 * runtime and tears it down itself, so never restart under it.
+		 */
+		if (sc->runtime_owners & IWM_RUNTIME_CONNECT)
+			return (error);
+		dev_err(sc->dip, CE_NOTE, "!iwm runtime error=%d; restarting",
+		    error);
+		held = sc->runtime_owners;
+		sc->runtime_stop_error = iwm_runtime_stop(sc);
+		if (sc->runtime_stop_error != 0)
+			return (sc->runtime_stop_error);
+		sc->runtime_started = B_FALSE;
+		sc->runtime_owners = 0;
+	}
 	if (sc->runtime_owners & owner)
 		return (0);
 	if (sc->runtime_started) {
@@ -737,7 +753,7 @@ iwm_runtime_acquire(struct iwm_softc *sc, enum iwm_runtime_owner owner)
 			    sc->runtime_stop_error);
 		return (EIO);
 	}
-	sc->runtime_owners |= owner;
+	sc->runtime_owners |= owner | held;
 	return (0);
 }
 
