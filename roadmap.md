@@ -1,17 +1,28 @@
 # iwm (Intel 8000-series Wi-Fi) Roadmap
 
-Target: functional, stable Wi-Fi on illumos (OmniOS) for Intel Wireless 8260/8265 class
+Target: functional, stable Wi-Fi on illumos (OmniOS) for the Intel 8000 series
 cards, via the existing `iwm` driver in this tree.
 
 Status of this document: written from a read of the repo only. Comparison against the
 reference drivers (OpenBSD `if_iwm.c`, FreeBSD `if_iwm*`, Linux `iwlwifi/mvm`) has NOT
 been done yet; items marked [VERIFY] are suspicions to be checked in Stage 0.
 
-## 0. Open question
+## 0. Scope and reference policy
 
-"8500 series" is not an Intel product line. The driver targets the 8000 family
-(8260 = PCI 8086:24f3, 8265 = 8086:24fd, 8275 etc.). Confirm the actual card (PCI IDs,
-subsystem ID, revision) before Stage 1. All stages assume 8260/8265.
+Scope: the whole Intel 8000 series handled by the `iwm` driver family: 8260 (8086:24f3),
+8265 (8086:24fd), 8275 and related SKUs, with per-SKU firmware (`iwm-8000C-36`,
+`iwm-8265-36`). Other iwm-supported families (7260/7265/3160/3165/3168, 9000) are out of
+scope unless added later as a post-Stage 6 extension; keep the cfg table family-aware so that
+is possible.
+
+Reference policy (applies to every stage):
+- OpenBSD `sys/dev/pci/if_iwm.c` (and `if_iwmreg.h`, `if_iwmvar.h`) and FreeBSD
+  `sys/dev/iwm/` are the primary references. Take heavy inspiration from them: when in doubt,
+  match their command sequences, field values, timing, and workarounds, and check their commit
+  logs and bug trackers for fixes newer than our donor snapshot.
+- Linux iwlwifi/mvm is the tiebreaker for hardware behaviour the BSD drivers leave
+  undocumented.
+- Deviations from the BSD drivers must be justified in `docs/audit.md`.
 
 ## 1. Repository map
 
@@ -78,7 +89,7 @@ Each stage ends with: documentation updated (this file and `docs/` notes), cstyl
 clean, a recorded hardware test log, and a commit.
 
 ### Stage 0 - Audit against references (no behaviour change)
-- Obtain reference sources: OpenBSD `sys/dev/pci/if_iwm.c`, `if_iwmreg.h`, `if_iwmvar.h`
+- Obtain reference sources (OpenBSD and FreeBSD first, per section 0): OpenBSD `sys/dev/pci/if_iwm.c`, `if_iwmreg.h`, `if_iwmvar.h`
   (the stated donor, pinned commit `0efabb06...`); FreeBSD `sys/dev/iwm/`; Linux
   `drivers/net/wireless/intel/iwlwifi/{pcie,mvm,fw}`. Record exact versions in
   `docs/references.md`.
