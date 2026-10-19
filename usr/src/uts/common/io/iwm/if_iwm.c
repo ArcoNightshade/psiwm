@@ -361,7 +361,8 @@ iwm_dma_free(struct iwm_dma_info *dma)
  * Read raw bytes in thread context with exclusive ownership of fw.  Success
  * means file I/O only.  TLV parsing, version/capability validation and device
  * transfer require successful validation by iwm_fw_parse().
- * The filename resolves to kernel/firmware/iwm/iwm-8000C-36 through firmload (per-device name from iwm_cfgs).
+ * The per-device name from iwm_cfgs (iwm-8000C-36 or iwm-8265-36) resolves
+ * to kernel/firmware/iwm/<name> through firmload.
  */
 int
 iwm_fw_read(struct iwm_softc *sc)
@@ -863,20 +864,38 @@ iwm_m_promisc(void *arg, boolean_t on)
 static int
 iwm_m_stat(void *arg, uint_t stat, uint64_t *value)
 {
-	_NOTE(ARGUNUSED(arg))
+	struct iwm_softc *sc = arg;
+	const struct ieee80211_device_stats *st = &sc->ic.ic_stats;
+
 	switch (stat) {
 	case MAC_STAT_IFSPEED:
+		*value = iwm_link_speed(sc);
+		break;
 	case MAC_STAT_IPACKETS:
+		*value = st->is_rx_frags;
+		break;
 	case MAC_STAT_OPACKETS:
+		*value = st->is_tx_frags;
+		break;
 	case MAC_STAT_RBYTES:
+		*value = st->is_rx_bytes;
+		break;
 	case MAC_STAT_OBYTES:
+		*value = st->is_tx_bytes;
+		break;
 	case MAC_STAT_IERRORS:
+		*value = st->is_fcs_errors + st->is_wep_errors;
+		break;
 	case MAC_STAT_OERRORS:
-		*value = 0;
-		return (0);
+		*value = st->is_tx_failed;
+		break;
+	case MAC_STAT_NOXMTBUF:
+		*value = st->is_tx_nobuf;
+		break;
 	default:
 		return (ENOTSUP);
 	}
+	return (0);
 }
 
 /* The private snapshot contains native ABI values, never node pointers. */
@@ -1695,7 +1714,7 @@ iwm_attach(dev_info_t *dip, ddi_attach_cmd_t cmd)
 	cv_init(&sc->connection.cv, NULL, CV_DRIVER, NULL);
 	mutex_init(&sc->connection.crypto_lock, NULL, MUTEX_DRIVER, NULL);
 	sc->operation_initialized = B_TRUE;
-	/* Public MAC registration is on by default; iwm-public-scan=0 disables. */
+	/* Public MAC registration is default; iwm-public-scan=0 disables. */
 	sc->public_enabled = ddi_prop_get_int(DDI_DEV_T_ANY, dip,
 	    DDI_PROP_DONTPASS, "iwm-public-scan", 1) != 0;
 	ddi_set_driver_private(dip, sc);

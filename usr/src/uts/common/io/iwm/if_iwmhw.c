@@ -130,7 +130,8 @@
 
 #define	IWM_RUN_MASK	(IWM_CSR_INT_BIT_FH_TX | IWM_CSR_INT_BIT_FH_RX | \
 	IWM_CSR_INT_BIT_SW_RX | IWM_CSR_INT_BIT_RX_PERIODIC | \
-	IWM_CSR_INT_BIT_ALIVE | IWM_CSR_INT_BIT_HW_ERR | IWM_CSR_INT_BIT_SW_ERR)
+	IWM_CSR_INT_BIT_ALIVE | IWM_CSR_INT_BIT_HW_ERR | \
+	IWM_CSR_INT_BIT_SW_ERR | IWM_CSR_INT_BIT_RF_KILL)
 #define	IWM_NVM_READ_OPCODE	0
 #define	IWM_NVM_LIMIT	32768
 #define	IWM_NVM_CHUNK	2048
@@ -468,6 +469,14 @@ struct iwm_association {
 	uint64_t beacon_tsf;
 	uint8_t dtim_count;
 	uint8_t dtim_period;
+	/* Rate adaptation (host ladder start index plus TX feedback). */
+	boolean_t rs_valid;
+	uint_t rs_start;
+	uint_t rs_good;
+	uint_t rs_frames;
+	uint_t rs_retries;
+	uint_t rs_fail;
+	clock_t rs_next;
 	uint_t tx_submitted;
 	uint_t tx_completed;
 	uint_t rx_delivered;
@@ -2596,7 +2605,7 @@ iwm_association_tx_done(struct iwm_softc *sc, uint_t qid, uint_t idx,
 		return (iwm_ba_tx_done(sc, idx, p, n));
 	if (r->image != IWM_FW_REGULAR || r->state != IWM_REGULAR_IDLE ||
 	    qid < 5 || qid > 8 || idx >= IWM_TX_RING_COUNT ||
-	    n != 44 || p[0] != 1 || (p[33] >> 4) != 0)
+	    n != 44 || p[0] != 1)
 		return (EPROTO);
 	ring = &r->association.tx[qid - 5];
 	if (!(r->association.queues & (1U << qid)) ||
@@ -2616,6 +2625,21 @@ iwm_association_tx_done(struct iwm_softc *sc, uint_t qid, uint_t idx,
 			return (EPROTO);
 	}
 	ring->data[idx].status = iwm_u32(p + 36);
+	{
+		uint_t status = iwm_u16(p + 36) & IWM_TX_STATUS_MSK;
+		boolean_t failed = status != IWM_TX_STATUS_SUCCESS &&
+		    status != IWM_TX_STATUS_DIRECT_DONE;
+
+		sc->ic.ic_stats.is_tx_retries += p[3];
+		if (failed)
+			sc->ic.ic_stats.is_tx_failed++;
+		if (ring->data[idx].table_rate) {
+			r->association.rs_frames++;
+			r->association.rs_retries += p[3];
+			if (failed)
+				r->association.rs_fail++;
+		}
+	}
 	for (i = 0; i < count; i++)
 		ring->data[(ring->tail + i) & 0xff].completed = B_TRUE;
 	cv_broadcast(&r->cv);
@@ -3245,6 +3269,19 @@ iwm_active_intr(struct iwm_softc *sc, uint32_t causes, uint32_t fh)
 			iwm_fw_error_dump(sc);
 		r->error = EIO;
 	} else {
+		/*
+		 * Hardware RF-kill switch (OpenBSD iwm_check_rfkill).  The bit
+		 * reads 0 when the radio is disabled.  Fail the runtime so the
+		 * connection tears down; the next acquire restarts it and
+		 * refuses to start while the switch is still on.
+		 */
+		if ((causes & IWM_CSR_INT_BIT_RF_KILL) != 0 &&
+		    (iwm_rd(sc, IWM_CSR_GP_CNTRL) &
+		    IWM_CSR_GP_CNTRL_REG_FLAG_HW_RF_KILL_SW) == 0) {
+			dev_err(sc->dip, CE_WARN,
+			    "!iwm radio disabled by RF-kill switch");
+			r->error = ENETDOWN;
+		}
 		if (causes & IWM_CSR_INT_BIT_FH_TX) {
 			if ((r->state != IWM_INIT_UPLOAD &&
 			    r->state != IWM_REGULAR_UPLOAD) || r->chunk_done)
@@ -3729,6 +3766,193 @@ iwm_ba_native(struct iwm_softc *sc, boolean_t active)
 	mutex_enter(&sc->lock);
 }
 
+/*
+ * Rate adaptation.  The firmware walks LQ rs_table[] downwards on retries for
+ * frames sent with TX_CMD_FLG_STA_RATE (OpenBSD iwm_setrates).  The host
+ * keeps a descending ladder of the rates both sides support and moves the
+ * table's starting entry from TX feedback: down quickly on failures/retries,
+ * up slowly after several clean windows.
+ */
+struct iwm_rs_step {
+	boolean_t ht;
+	uint8_t rate;		/* MCS (HT) or 500 kbit/s units (legacy) */
+};
+
+#define	IWM_RS_LADDER	16
+
+static uint_t
+iwm_rs_ladder(const ieee80211_node_t *node, struct iwm_rs_step *ladder)
+{
+	static const uint8_t legacy[] =
+	    { 108, 96, 72, 48, 36, 24, 18, 12, 22, 11, 4, 2 };
+	uint32_t have = 0;
+	uint_t n = 0, i;
+	int mcs;
+	boolean_t ofdm6 = B_FALSE;
+	uint8_t lowest = 0;
+
+	for (i = 0; i < node->in_rates.ir_nrates; i++) {
+		uint8_t rate = node->in_rates.ir_rates[i] & IEEE80211_RATE_VAL;
+		uint_t j;
+
+		for (j = 0; j < sizeof (legacy); j++) {
+			if (legacy[j] == rate) {
+				have |= 1U << j;
+				if (rate == 12)
+					ofdm6 = B_TRUE;
+			}
+		}
+	}
+	if ((node->in_flags & IEEE80211_NODE_HT) != 0) {
+		uint8_t mask = 0;
+
+		for (i = 0; i < node->in_htrates.rs_nrates; i++) {
+			uint8_t m = node->in_htrates.rs_rates[i] &
+			    IEEE80211_RATE_VAL;
+
+			if (m <= 7)
+				mask |= 1U << m;
+		}
+		for (mcs = 7; mcs >= 0; mcs--) {
+			if (mask & (1U << mcs)) {
+				ladder[n].ht = B_TRUE;
+				ladder[n++].rate = mcs;
+			}
+		}
+		/* Final fallbacks: 6 Mbit/s OFDM, then the lowest legacy. */
+		if (ofdm6) {
+			ladder[n].ht = B_FALSE;
+			ladder[n++].rate = 12;
+		}
+		for (i = 0; i < sizeof (legacy); i++) {
+			if (have & (1U << i))
+				lowest = legacy[i];
+		}
+		if (lowest != 0 && lowest != 12) {
+			ladder[n].ht = B_FALSE;
+			ladder[n++].rate = lowest;
+		}
+	} else {
+		for (i = 0; i < sizeof (legacy); i++) {
+			if (have & (1U << i)) {
+				ladder[n].ht = B_FALSE;
+				ladder[n++].rate = legacy[i];
+			}
+		}
+	}
+	return (n);
+}
+
+/* sc->lock held. The table starts at the ladder entry chosen by feedback. */
+static int
+iwm_lq_build(struct iwm_softc *sc, struct iwm_lq_cmd *lq)
+{
+	struct iwm_association *a = &sc->run->association;
+	struct iwm_rs_step ladder[IWM_RS_LADDER];
+	uint8_t ant = sc->identity.tx_ant & -sc->identity.tx_ant;
+	uint_t n, i, start;
+	uint32_t encoded;
+	int error;
+
+	ASSERT(MUTEX_HELD(&sc->lock));
+	n = iwm_rs_ladder(sc->connection.node, ladder);
+	if (n == 0)
+		return (ENOTSUP);
+	start = MIN(a->rs_start, n - 1);
+	bzero(lq, sizeof (*lq));
+	lq->flags = (sc->ic.ic_flags & IEEE80211_F_USEPROT) ?
+	    IWM_LQ_FLAG_USE_RTS : 0;
+	lq->single_stream_ant_msk = ant;
+	lq->dual_stream_ant_msk = sc->identity.tx_ant;
+	lq->agg_time_limit = LE_16(4000);
+	lq->agg_disable_start_th = 3;
+	lq->agg_frame_cnt_limit = 0x3f;
+	for (i = 0; i < 16; i++) {
+		const struct iwm_rs_step *step = &ladder[MIN(start + i, n - 1)];
+
+		error = iwm_tx_rate_encode(step->ht, step->rate, ant, &encoded);
+		if (error != 0)
+			return (error);
+		lq->rs_table[i] = LE_32(encoded);
+	}
+	return (0);
+}
+
+static int
+iwm_lq_send(struct iwm_softc *sc)
+{
+	struct iwm_lq_cmd lq;
+	int error;
+
+	if ((error = iwm_lq_build(sc, &lq)) != 0)
+		return (error);
+	return (iwm_control(sc, 0x4e, &lq, sizeof (lq)));
+}
+
+/* Connection worker, once a second, sc->lock held. */
+static int
+iwm_rs_work(struct iwm_softc *sc)
+{
+	struct iwm_association *a = &sc->run->association;
+	struct iwm_rs_step ladder[IWM_RS_LADDER];
+	clock_t now = ddi_get_lbolt();
+	uint_t n, start, frames, retries, fails;
+
+	ASSERT(MUTEX_HELD(&sc->lock));
+	if (!a->rs_valid || !sc->connection.running || now < a->rs_next)
+		return (0);
+	a->rs_next = now + drv_usectohz(1000000);
+	frames = a->rs_frames;
+	retries = a->rs_retries;
+	fails = a->rs_fail;
+	if (frames < 10)
+		return (0);
+	a->rs_frames = a->rs_retries = a->rs_fail = 0;
+	n = iwm_rs_ladder(sc->connection.node, ladder);
+	if (n == 0)
+		return (0);
+	start = MIN(a->rs_start, n - 1);
+	if (fails * 4 > frames || retries > 2 * frames) {
+		start = MIN(start + (fails * 2 > frames ? 2 : 1), n - 1);
+		a->rs_good = 0;
+	} else if (fails == 0 && retries * 10 < frames) {
+		if (++a->rs_good >= 3 && start > 0) {
+			start--;
+			a->rs_good = 0;
+		}
+	} else {
+		a->rs_good = 0;
+	}
+	if (start == a->rs_start)
+		return (0);
+	a->rs_start = start;
+	return (iwm_lq_send(sc));
+}
+
+/* Current top-of-table rate in bit/s, or 0 when not associated. */
+uint64_t
+iwm_link_speed(struct iwm_softc *sc)
+{
+	static const uint32_t mcs20[] =
+	    { 6500, 13000, 19500, 26000, 39000, 52000, 58500, 65000 };
+	struct iwm_rs_step ladder[IWM_RS_LADDER];
+	uint64_t speed = 0;
+	uint_t n;
+
+	mutex_enter(&sc->lock);
+	if (sc->run != NULL && sc->connection.running &&
+	    sc->connection.node != NULL &&
+	    (n = iwm_rs_ladder(sc->connection.node, ladder)) != 0) {
+		const struct iwm_rs_step *step =
+		    &ladder[MIN(sc->run->association.rs_start, n - 1)];
+
+		speed = step->ht ? (uint64_t)mcs20[step->rate] * 1000 :
+		    (uint64_t)step->rate * 500000;
+	}
+	mutex_exit(&sc->lock);
+	return (speed);
+}
+
 /* No timer retains a raw tap pointer; the existing worker owns the deadline. */
 static int
 iwm_ba_work(struct iwm_softc *sc)
@@ -3736,9 +3960,7 @@ iwm_ba_work(struct iwm_softc *sc)
 	struct iwm_runtime *r = sc->run;
 	struct iwm_association *a = &r->association;
 	struct iwm_tx_ba *ba = &a->ba[0];
-	struct iwm_lq_cmd lq;
 	struct iwm_tx_path_flush_cmd_v1 flush;
-	uint32_t rate;
 	uint_t i, queued;
 	clock_t end;
 	int error;
@@ -3779,22 +4001,7 @@ iwm_ba_work(struct iwm_softc *sc)
 		if (error == 0)
 			error = iwm_association_station(sc, B_TRUE, B_FALSE);
 		if (error == 0)
-			error = iwm_tx_rate_encode(B_TRUE, 0,
-			    sc->identity.tx_ant & -sc->identity.tx_ant, &rate);
-		if (error == 0) {
-			bzero(&lq, sizeof (lq));
-			lq.flags = (sc->ic.ic_flags &
-			    IEEE80211_F_USEPROT) ? 1 : 0;
-			lq.single_stream_ant_msk =
-			    sc->identity.tx_ant & -sc->identity.tx_ant;
-			lq.dual_stream_ant_msk = sc->identity.tx_ant;
-			lq.agg_time_limit = LE_16(4000);
-			lq.agg_disable_start_th = 3;
-			lq.agg_frame_cnt_limit = 0x3f;
-			for (i = 0; i < 16; i++)
-				lq.rs_table[i] = LE_32(rate);
-			error = iwm_control(sc, 0x4e, &lq, sizeof (lq));
-		}
+			error = iwm_lq_send(sc);
 		iwm_nic_unlock(sc);
 		if (error == 0) {
 			if (sc->connection.cancel)
@@ -4030,7 +4237,7 @@ iwm_association_tx(struct iwm_softc *sc, mblk_t *mp, boolean_t management,
 	ieee80211_node_t *node;
 	const uint8_t *frame = mp->b_rptr;
 	size_t length, header, pad;
-	boolean_t ht, aggregate;
+	boolean_t ht, aggregate, table_rate;
 	uint64_t address, scratch;
 	uint32_t flags, rate_flags;
 	uint_t ac = management ? 3 : 0, i, j, selected = 12;
@@ -4124,6 +4331,13 @@ iwm_association_tx(struct iwm_softc *sc, mblk_t *mp, boolean_t management,
 	}
 	if (!management && (sc->ic.ic_flags & IEEE80211_F_USEPROT))
 		flags |= IWM_TX_CMD_FLG_PROT_REQUIRE;
+	/* Unicast data follows the LQ table; mgmt and EAPOL stay basic. */
+	table_rate = !management && !eapol && !(frame[4] & 1) &&
+	    r->association.rs_valid;
+	if (table_rate) {
+		flags |= IWM_TX_CMD_FLG_STA_RATE;
+		tx->initial_rate_index = 0;
+	}
 	tx->tx_flags = LE_32(flags);
 	ht = !management && !eapol && !(frame[16] & 1) &&
 	    (node->in_flags & IEEE80211_NODE_HT) != 0;
@@ -4198,6 +4412,7 @@ iwm_association_tx(struct iwm_softc *sc, mblk_t *mp, boolean_t management,
 	slot->sequence = iwm_u16(frame + 22) >> 4;
 	slot->ba_generation = aggregate ? r->association.ba[0].generation : 0;
 	slot->transmitted = slot->acknowledged = B_FALSE;
+	slot->table_rate = table_rate;
 	slot->status = 0;
 	slot->expires = ddi_get_lbolt() + drv_usectohz(5000000);
 	slot->completed = B_FALSE;
@@ -4208,6 +4423,12 @@ iwm_association_tx(struct iwm_softc *sc, mblk_t *mp, boolean_t management,
 		r->association.ba[0].next_sequence =
 		    IEEE80211_SEQ_ADD(r->association.ba[0].next_sequence, 1);
 	r->association.tx_submitted++;
+	if (!management) {
+		sc->ic.ic_stats.is_tx_frags++;
+		sc->ic.ic_stats.is_tx_bytes += length;
+		if (frame[4] & 1)
+			sc->ic.ic_stats.is_tx_mcast++;
+	}
 	iwm_wr(sc, IWM_HBUS_TARG_WRPTR, ring->qid << 8 | ring->cur);
 	iwm_nic_unlock(sc);
 out:
@@ -4685,11 +4906,17 @@ iwm_association_run(struct iwm_softc *sc)
 
 	/* Partial RUN updates also require RUN-stop before topology removal. */
 	a->run_configured = B_TRUE;
+	a->rs_valid = B_FALSE;
+	a->rs_start = a->rs_good = 0;
+	a->rs_frames = a->rs_retries = a->rs_fail = 0;
+	a->rs_next = ddi_get_lbolt() + drv_usectohz(1000000);
 	if ((error = iwm_association_station(sc, B_TRUE, B_FALSE)) != 0 ||
+	    (error = iwm_lq_send(sc)) != 0 ||
 	    (error = iwm_association_mac(sc, IWM_FW_CTXT_ACTION_MODIFY,
 	    B_TRUE)) != 0 ||
 	    (error = iwm_association_sf(sc, B_TRUE)) != 0)
 		return (error);
+	a->rs_valid = B_TRUE;
 	bzero(multicast, sizeof (multicast));
 	multicast[0] = 1;
 	multicast[3] = 1;
@@ -6177,6 +6404,8 @@ iwm_connection_task(void *arg)
 			break;
 		if ((error = iwm_wme_work(sc)) != 0)
 			break;
+		if ((error = iwm_rs_work(sc)) != 0)
+			break;
 		if (c->running && c->operation_owned) {
 			mutex_exit(&sc->lock);
 			iwm_operation_exit(sc);
@@ -6191,6 +6420,8 @@ iwm_connection_task(void *arg)
 			a->head = (a->head + 1) % IWM_SCAN_RX_LIMIT;
 			a->queued--;
 			a->rx_delivered++;
+			sc->ic.ic_stats.is_rx_frags++;
+			sc->ic.ic_stats.is_rx_bytes += msgdsize(frame.mp);
 			mutex_exit(&sc->lock);
 			ieee80211_input(&sc->ic, frame.mp, node, frame.rssi,
 			    frame.timestamp);

@@ -83,6 +83,15 @@ Gaps and limitations found:
     needed before upstreaming. Shared net80211 changes affect all in-tree wifi drivers and need
     regression testing (iwn, iwh, ath, ral, etc.).
 
+## 2b. Progress (2026-10-19)
+
+Done, syntax-checked and cstyle-clean but NOT built/linked or hardware-tested (see
+docs/audit.md fix log): F3, F13, F12 (partial), F1 (error dump, restart-on-acquire, RF-kill),
+F2 (host rate ladder + LQ), m_stat counters, device table and 8265 firmware, driver aliases,
+public registration default-on.
+Still open: suspend/resume, connection-worker redesign (F6), hardware CCMP (F5), 5 GHz / HT40 /
+MIMO / VHT, beacon-loss and roaming, background scan, remaining audit queue, man page.
+
 ## 3. Stages
 
 Each stage ends with: documentation updated (this file and `docs/` notes), cstyle/hdrchk/lint

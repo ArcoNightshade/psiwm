@@ -176,6 +176,7 @@ struct iwm_tx_data {
 	uint16_t		sequence;
 	boolean_t		transmitted;
 	boolean_t		acknowledged;
+	boolean_t		table_rate;
 	clock_t			expires;
 	uint32_t		status;
 };
@@ -397,6 +398,7 @@ void iwm_connection_keys_clear(struct iwm_softc *);
 void iwm_connection_config_clear(struct iwm_softc *);
 int iwm_runtime_stop(struct iwm_softc *);
 int iwm_public_scan(struct iwm_softc *);
+uint64_t iwm_link_speed(struct iwm_softc *);
 int iwm_select_bss(struct iwm_softc *, const uint8_t *, size_t, uint_t,
     ieee80211_node_t **);
 int iwm_lar_prepare(struct iwm_softc *, uint_t);

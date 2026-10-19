@@ -57,6 +57,16 @@ Deviations:
 | 2026-10-18 | F13 | Management retry limit 60 -> 3; named retry constants | Source review only. |
 | 2026-10-18 | F1 (partial) | SW_ERR now dumps the firmware error table (`iwm_fw_error_dump`, once per image); 0xa5a5a5a0 dead-device pattern treated as error; `iwm_runtime_acquire` now stops and restarts a runtime that has failed, unless a connection owns it. RF-kill handling NOT done yet. | Source review only. |
 
+| 2026-10-19 | F11 / Stage 1 | Attach by PCI vendor/device (8086:24f3, 24f4, 24fd) via `iwm_cfgs[]`; subsystem/revision no longer gated. Added `iwm-8265-36` firmware (OpenBSD iwm-firmware-20240410, sha256 d7d84c9b6a3b1976acb97a2bec7102e24a6b5d794110c0dcbd107ab5d9877e5f; `iwm-8000C-36` verified byte-identical to the OpenBSD file). p5m gets `driver` action with the three aliases. Public MAC registration now on by default (`iwm-public-scan=0` disables). | Syntax-checked only. |
+| 2026-10-19 | F12 | Removed the `ra_tid` high-nibble check from non-aggregate TX completion; a non-zero QoS TID no longer kills the runtime. | Syntax-checked only. |
+| 2026-10-19 | F2 | Rate adaptation: host builds a descending rate ladder (HT MCS0-7 negotiated, then 6 Mbit/s OFDM, then lowest legacy; or all legacy rates) and sends it in LQ_CMD at RUN entry; unicast data frames use `TX_CMD_FLG_STA_RATE` so the firmware starts at the table's first entry and steps down on retries. `iwm_rs_work` (worker, 1 Hz) moves the starting entry from TX completion feedback (down on >25% failures or >2 retries/frame, up after 3 clean windows). BA queue LQ uses the same table. Management, EAPOL and group frames keep the basic rate. Single antenna, 20 MHz, no SGI (unchanged). | Syntax-checked only. Needs throughput test; thresholds are untuned. |
+| 2026-10-19 | F1 | RF_KILL cause is unmasked in run mode; switch-on fails the runtime (recovered by the restart-on-acquire path, which refuses while the switch is on). | Syntax-checked only. |
+| 2026-10-19 | F7/stats | `m_stat` reports real packet/byte/error counts and link speed from `ic_stats` and the LQ ladder; `is_tx_retries`, `is_tx_failed`, `is_tx_mcast` maintained. | Syntax-checked only. |
+
+Build checking done in this environment: `gcc -fsyntax-only` against the tree's own headers
+(no errors or warnings in if_iwm.c, if_iwmhw.c, if_iwmfw.c) and `cstyle -pP` (clean). No link,
+no `hdrchk`, no `lint`, no run on hardware.
+
 ## Remaining audit queue (TODO)
 
 1. NVM read, NVM parse (HW address, SKU, channel flags, LAR/MCC) vs iwm_nvm_init / iwm_parse_nvm_data.

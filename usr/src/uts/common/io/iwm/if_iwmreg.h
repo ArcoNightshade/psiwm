@@ -1166,10 +1166,18 @@ struct iwm_tx_path_flush_cmd_v1 {
 /* API36 TX prefix. Encryption and aggregation remain host-owned/disabled. */
 #define	IWM_TX_CMD_FLG_PROT_REQUIRE	(1 << 0)
 #define	IWM_TX_CMD_FLG_ACK		(1 << 3)
+#define	IWM_TX_CMD_FLG_STA_RATE		(1 << 4)
 #define	IWM_TX_CMD_FLG_BT_DIS		(1 << 12)
 #define	IWM_TX_CMD_FLG_SEQ_CTL		(1 << 13)
 #define	IWM_TX_CMD_FLG_MH_PAD		(1 << 20)
 #define	IWM_TX_CMD_OFFLD_PAD		(1 << 13)
+
+/* TX response status byte (OpenBSD IWM_TX_STATUS_*). */
+#define	IWM_TX_STATUS_MSK		0xff
+#define	IWM_TX_STATUS_SUCCESS		0x01
+#define	IWM_TX_STATUS_DIRECT_DONE	0x02
+
+#define	IWM_LQ_FLAG_USE_RTS		(1 << 0)
 
 /* Retry limits as in OpenBSD/FreeBSD/Linux (mgmt) and Linux (RTS, data). */
 #define	IWM_DEFAULT_TX_RETRY		15
