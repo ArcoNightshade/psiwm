@@ -46,18 +46,26 @@
 #include <inet/wifi_ioctl.h>
 #include "if_iwmvar.h"
 
-/* The only hardware identity admitted by the resource mapping helper. */
-static const struct iwm_cfg iwm_8260 = {
-	.vendor = 0x8086,
-	.device = 0x24f3,
-	.subvendor = 0x8086,
-	.subdevice = 0x1130,
-	.revision = 0x3a,
-	.family = IWM_DEVICE_FAMILY_8000,
-	.fw_dma_size = IWM_FWDMASEGSZ_8000,
-	.nvm_section_size = 32768,
-	.nvm_external = B_TRUE,
-	.fwname = "iwm-8000C-36"
+/*
+ * Admitted devices, selected by PCI vendor/device only (as OpenBSD's
+ * iwm_match/iwm_attach do).  Subsystem and revision are logged, not gated;
+ * silicon stepping is handled from CSR_HW_REV during bring-up.
+ */
+#define	IWM_CFG_8000(dev, fw)						\
+	{								\
+		.vendor = 0x8086,					\
+		.device = (dev),					\
+		.family = IWM_DEVICE_FAMILY_8000,			\
+		.fw_dma_size = IWM_FWDMASEGSZ_8000,			\
+		.nvm_section_size = 32768,				\
+		.nvm_external = B_TRUE,					\
+		.fwname = (fw)						\
+	}
+
+static const struct iwm_cfg iwm_cfgs[] = {
+	IWM_CFG_8000(0x24f3, "iwm-8000C-36"),	/* Dual Band AC 8260 */
+	IWM_CFG_8000(0x24f4, "iwm-8000C-36"),	/* Dual Band AC 8260 */
+	IWM_CFG_8000(0x24fd, "iwm-8265-36")	/* Dual Band AC 8265 */
 };
 
 #define	IWM_BAR_SIZE	0x2000
@@ -187,7 +195,8 @@ iwm_pci_caps(struct iwm_softc *sc)
 int
 iwm_pci_map(struct iwm_softc *sc)
 {
-	const struct iwm_cfg *cfg = &iwm_8260;
+	const struct iwm_cfg *cfg = NULL;
+	uint_t i;
 	uint16_t vendor, device, subvendor, subdevice;
 	uint8_t revision;
 
@@ -204,9 +213,14 @@ iwm_pci_map(struct iwm_softc *sc)
 	revision = pci_config_get8(sc->pcih, PCI_CONF_REVID);
 	dev_err(sc->dip, CE_NOTE, "!iwm PCI %04x:%04x subsystem %04x:%04x "
 	    "revision %02x", vendor, device, subvendor, subdevice, revision);
-	if (vendor != cfg->vendor || device != cfg->device ||
-	    subvendor != cfg->subvendor || subdevice != cfg->subdevice ||
-	    revision != cfg->revision)
+	for (i = 0; i < sizeof (iwm_cfgs) / sizeof (iwm_cfgs[0]); i++) {
+		if (vendor == iwm_cfgs[i].vendor &&
+		    device == iwm_cfgs[i].device) {
+			cfg = &iwm_cfgs[i];
+			break;
+		}
+	}
+	if (cfg == NULL)
 		return (ENODEV);
 	sc->pci_command = pci_config_get16(sc->pcih, PCI_CONF_COMM);
 	dev_err(sc->dip, CE_NOTE, "!iwm PCI command before=%04x",
@@ -347,7 +361,7 @@ iwm_dma_free(struct iwm_dma_info *dma)
  * Read raw bytes in thread context with exclusive ownership of fw.  Success
  * means file I/O only.  TLV parsing, version/capability validation and device
  * transfer require successful validation by iwm_fw_parse().
- * The filename resolves to kernel/firmware/iwm/iwm-8000C-36 through firmload.
+ * The filename resolves to kernel/firmware/iwm/iwm-8000C-36 through firmload (per-device name from iwm_cfgs).
  */
 int
 iwm_fw_read(struct iwm_softc *sc)
@@ -359,7 +373,7 @@ iwm_fw_read(struct iwm_softc *sc)
 
 	if (fw->data != NULL)
 		return (EBUSY);
-	error = firmware_open("iwm", iwm_8260.fwname, &handle);
+	error = firmware_open("iwm", sc->cfg->fwname, &handle);
 	if (error != 0)
 		return (error);
 	if (iwm_checkpoint(sc, "firmware-open") != 0) {
@@ -1681,8 +1695,9 @@ iwm_attach(dev_info_t *dip, ddi_attach_cmd_t cmd)
 	cv_init(&sc->connection.cv, NULL, CV_DRIVER, NULL);
 	mutex_init(&sc->connection.crypto_lock, NULL, MUTEX_DRIVER, NULL);
 	sc->operation_initialized = B_TRUE;
+	/* Public MAC registration is on by default; iwm-public-scan=0 disables. */
 	sc->public_enabled = ddi_prop_get_int(DDI_DEV_T_ANY, dip,
-	    DDI_PROP_DONTPASS, "iwm-public-scan", 0) != 0;
+	    DDI_PROP_DONTPASS, "iwm-public-scan", 1) != 0;
 	ddi_set_driver_private(dip, sc);
 	sc->fail_step = ddi_prop_get_int(DDI_DEV_T_ANY, dip,
 	    DDI_PROP_DONTPASS, "iwm-attach-fail", 0);
@@ -1762,7 +1777,7 @@ DDI_DEFINE_STREAM_OPS(iwm_devops, nulldev, nulldev, iwm_attach,
 
 static struct modldrv iwm_modldrv = {
 	&mod_driverops,
-	"Intel 8260 INIT transport",
+	"Intel 8000-series Wi-Fi",
 	&iwm_devops
 };
 

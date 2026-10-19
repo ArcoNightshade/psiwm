@@ -15,7 +15,7 @@
 
 UTSBASE		= ../..
 FWDIR		= $(UTSBASE)/common/io/iwm/fw-iw
-FWFILES		= iwm-8000C-36
+FWFILES		= iwm-8000C-36 iwm-8265-36
 MODULE		= iwm
 OBJECTS		= $(IWM_OBJS:%=$(OBJS_DIR)/%)
 ROOTMODULE	= $(ROOT_DRV_DIR)/$(MODULE)
