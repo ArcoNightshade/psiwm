@@ -139,6 +139,38 @@
 #define	IWM_CALIB_US	2000000
 #define	IWM_PHY_DB_GROUPS	9
 #define	IWM_PHY_DB_ENTRIES	(2 + 2 * IWM_PHY_DB_GROUPS)
+/* Host command and notification IDs (names and values as in OpenBSD). */
+#define	IWM_REPLY_ERROR			0x02
+#define	IWM_PHY_CONTEXT_CMD		0x08
+#define	IWM_SCAN_COMPLETE_UMAC		0x0f
+#define	IWM_ADD_STA			0x18
+#define	IWM_REMOVE_STA			0x19
+#define	IWM_TX_CMD			0x1c
+#define	IWM_SCD_QUEUE_CFG		0x1d
+#define	IWM_TXPATH_FLUSH		0x1e
+#define	IWM_MAC_CONTEXT_CMD		0x28
+#define	IWM_BINDING_CONTEXT_CMD		0x2b
+#define	IWM_TIME_QUOTA_CMD		0x2c
+#define	IWM_LQ_CMD			0x4e
+#define	IWM_POWER_TABLE_CMD		0x77
+#define	IWM_CARD_STATE_NOTIFICATION	0xa1
+#define	IWM_MISSED_BEACONS_NOTIFICATION	0xa2
+#define	IWM_MAC_PM_POWER_TABLE		0xa9
+#define	IWM_SCAN_ITERATION_COMPLETE_UMAC	0xb5
+#define	IWM_REPLY_RX_PHY_CMD		0xc0
+#define	IWM_REPLY_RX_MPDU_CMD		0xc1
+#define	IWM_BA_NOTIF			0xc5
+#define	IWM_MCAST_FILTER_CMD		0xd0
+/* Wide IDs: group << 8 | command (LONG_GROUP 1, PHY_OPS_GROUP 4). */
+#define	IWM_SCAN_CFG_CMD		0x10c
+#define	IWM_SCAN_REQ_UMAC		0x10d
+#define	IWM_SCAN_ABORT_UMAC		0x10e
+#define	IWM_CT_KILL_NOTIFICATION	0x4fe
+/*
+ * OpenBSD probes the AP after ic_bmissthres (7) missed beacons.  This port
+ * has no probe step, so it ends the connection after a longer silence.
+ */
+#define	IWM_BEACON_LOSS_LIMIT		30
 #define	IWM_INIT_COMPLETE_NOTIF	0x04
 #define	IWM_PHY_CONFIGURATION_CMD	0x6a
 #define	IWM_CALIB_RES_NOTIF_PHY_DB	0x6b
@@ -2261,7 +2293,7 @@ iwm_scan_rx(struct iwm_softc *sc, uint_t code, const uint8_t *p, size_t n)
 		s->dropped++;
 		return;
 	}
-	if (code == 0xc0) {
+	if (code == IWM_REPLY_RX_PHY_CMD) {
 		s->phy_valid = B_FALSE;
 		if (n < sizeof (s->phy) || p[0] < 8 ||
 		    p[0] > sizeof (s->phy.non_cfg_phy) || p[1] > 20) {
@@ -2806,7 +2838,7 @@ iwm_association_rx(struct iwm_softc *sc, uint_t code,
 	if (!c->rx_admission || c->node == NULL ||
 	    r->image != IWM_FW_REGULAR || r->state != IWM_REGULAR_IDLE)
 		goto drop;
-	if (code == 0xc0) {
+	if (code == IWM_REPLY_RX_PHY_CMD) {
 		a->phy_valid = B_FALSE;
 		if (n < sizeof (a->rx_phy) || p[0] < 8 ||
 		    p[0] > sizeof (a->rx_phy.non_cfg_phy) || p[1] > 20)
@@ -2938,30 +2970,47 @@ iwm_notification(struct iwm_softc *sc, const uint8_t *p, size_t length)
 		r->statistics_notifications++;
 		return;
 	}
-	if (code == 0xa2 || code == 0xa1 || code == 0x02 || code == 0x4fe) {
-		size_t expected = (code == 0xa2 || code == 0x02) ? 20 : 4;
+	if (code == IWM_MISSED_BEACONS_NOTIFICATION ||
+	    code == IWM_CARD_STATE_NOTIFICATION ||
+	    code == IWM_REPLY_ERROR || code == IWM_CT_KILL_NOTIFICATION) {
+		size_t expected =
+		    (code == IWM_MISSED_BEACONS_NOTIFICATION ||
+		    code == IWM_REPLY_ERROR) ? 20 : 4;
 
 		if (n != expected) {
 			iwm_proto_error(sc, IWM_PROTO_NOTIFICATION);
 			return;
 		}
-		if (code == 0xa2)
+		if (code == IWM_MISSED_BEACONS_NOTIFICATION) {
+			/* Word 1: consecutive beacons missed since last RX. */
+			uint32_t missed = iwm_u32(data + 4);
+
 			r->missed_beacon_notifications++;
-		else if (code != 0xa1 || (iwm_u32(data) & 0xf) != 0)
+			if (missed > IWM_BEACON_LOSS_LIMIT &&
+			    sc->connection.running &&
+			    sc->connection.error == 0) {
+				dev_err(sc->dip, CE_NOTE, "!iwm AP lost: %u "
+				    "consecutive beacons missed", missed);
+				sc->connection.error = ENETRESET;
+				cv_broadcast(&r->cv);
+			}
+		} else if (code != IWM_CARD_STATE_NOTIFICATION ||
+		    (iwm_u32(data) & 0xf) != 0)
 			r->error = EIO;
 		return;
 	}
-	if (code == 0xb5) {
+	if (code == IWM_SCAN_ITERATION_COMPLETE_UMAC) {
 		/* UMAC v1 fixed header followed by scanned-channel records. */
 		if (n < 16 || n != 16 + (size_t)data[4] * 8)
 			iwm_proto_error(sc, IWM_PROTO_NOTIFICATION);
 		return;
 	}
-	if (sc->connection.pending && (code == 0xc0 || code == 0xc1)) {
+	if (sc->connection.pending && (code == IWM_REPLY_RX_PHY_CMD ||
+	    code == IWM_REPLY_RX_MPDU_CMD)) {
 		iwm_association_rx(sc, code, data, n);
 		return;
 	}
-	if (code == 0x1c) {
+	if (code == IWM_TX_CMD) {
 		int error = iwm_association_tx_done(sc, qid, idx, data, n);
 
 		if (qid == IWM_TX_AGG_QUEUE && error != 0)
@@ -2971,7 +3020,7 @@ iwm_notification(struct iwm_softc *sc, const uint8_t *p, size_t length)
 		cv_broadcast(&r->cv);
 		return;
 	}
-	if (code == 0xc5) {
+	if (code == IWM_BA_NOTIF) {
 		if (iwm_ba_notification(sc, data, n) != 0)
 			r->association.ba[0].rejected++;
 		return;
@@ -2999,11 +3048,12 @@ iwm_notification(struct iwm_softc *sc, const uint8_t *p, size_t length)
 		cv_broadcast(&r->cv);
 		return;
 	}
-	if (r->scan.enabled && (code == 0xc0 || code == 0xc1)) {
+	if (r->scan.enabled && (code == IWM_REPLY_RX_PHY_CMD ||
+	    code == IWM_REPLY_RX_MPDU_CMD)) {
 		iwm_scan_rx(sc, code, data, n);
 		return;
 	}
-	if (r->scan.enabled && code == 0x0f) {
+	if (r->scan.enabled && code == IWM_SCAN_COMPLETE_UMAC) {
 		iwm_scan_completion(sc, data, n);
 		return;
 	}
@@ -3400,7 +3450,7 @@ iwm_association_phy(struct iwm_softc *sc, uint_t action)
 	struct iwm_association *a = &sc->run->association;
 	int error;
 
-	if (!iwm_command_version(&sc->fw, 0x08, 1) ||
+	if (!iwm_command_version(&sc->fw, IWM_PHY_CONTEXT_CMD, 1) ||
 	    (sc->fw.capa[1] & (1U << 16)) != 0)
 		return (ENOTSUP);
 	if ((action == IWM_FW_CTXT_ACTION_ADD) == a->phy)
@@ -3412,7 +3462,7 @@ iwm_association_phy(struct iwm_softc *sc, uint_t action)
 	cmd.rxchain_info = LE_32((sc->identity.rx_ant << 1) |
 	    (1U << 10) | (1U << 12));
 	cmd.txchain_info = LE_32(sc->identity.tx_ant);
-	error = iwm_control(sc, 0x08, &cmd, sizeof (cmd));
+	error = iwm_control(sc, IWM_PHY_CONTEXT_CMD, &cmd, sizeof (cmd));
 	if (error == 0)
 		a->phy = action != IWM_FW_CTXT_ACTION_REMOVE;
 	return (error);
@@ -3464,7 +3514,7 @@ iwm_association_mac(struct iwm_softc *sc, uint_t action, boolean_t assoc)
 	uint64_t epoch = w->epoch, revision = w->requested;
 	int error;
 
-	if (!iwm_command_version(&sc->fw, 0x28, 3))
+	if (!iwm_command_version(&sc->fw, IWM_MAC_CONTEXT_CMD, 3))
 		return (ENOTSUP);
 	if ((action == IWM_FW_CTXT_ACTION_ADD && a->mac) ||
 	    (action != IWM_FW_CTXT_ACTION_ADD && !a->mac) || !a->phy)
@@ -3525,7 +3575,7 @@ iwm_association_mac(struct iwm_softc *sc, uint_t action, boolean_t assoc)
 		cmd.sta.assoc_id = LE_32(IEEE80211_AID(node->in_associd));
 		cmd.sta.assoc_beacon_arrive_time = LE_32(a->beacon_gp2);
 	}
-	error = iwm_control(sc, 0x28, &cmd, sizeof (cmd));
+	error = iwm_control(sc, IWM_MAC_CONTEXT_CMD, &cmd, sizeof (cmd));
 	if (error == 0) {
 		a->mac = action != IWM_FW_CTXT_ACTION_REMOVE;
 		if (assoc && w->accepting && w->epoch == epoch)
@@ -3570,7 +3620,7 @@ iwm_association_binding(struct iwm_softc *sc, uint_t action)
 	struct iwm_binding_cmd_v1 cmd;
 	int error;
 
-	if (!iwm_command_version(&sc->fw, 0x2b, 1) ||
+	if (!iwm_command_version(&sc->fw, IWM_BINDING_CONTEXT_CMD, 1) ||
 	    (sc->fw.capa[1] & (1U << 7)) != 0)
 		return (ENOTSUP);
 	if (!a->phy || !a->mac ||
@@ -3579,7 +3629,7 @@ iwm_association_binding(struct iwm_softc *sc, uint_t action)
 	bzero(&cmd, sizeof (cmd));
 	cmd.action = LE_32(action);
 	cmd.macs[1] = cmd.macs[2] = LE_32(UINT32_MAX);
-	error = iwm_control(sc, 0x2b, &cmd, sizeof (cmd));
+	error = iwm_control(sc, IWM_BINDING_CONTEXT_CMD, &cmd, sizeof (cmd));
 	if (error == 0 && (sc->run->response_len != 4 ||
 	    iwm_u32(sc->run->response) != 0))
 		error = EIO;
@@ -3622,7 +3672,7 @@ iwm_association_queue(struct iwm_softc *sc, uint_t ac, boolean_t enable)
 		iwm_wr(sc, IWM_HBUS_TARG_WRPTR,
 		    qid << 8 | (LE_16(cmd.ssn) & 0xff));
 	}
-	error = iwm_control(sc, 0x1d, &cmd, sizeof (cmd));
+	error = iwm_control(sc, IWM_SCD_QUEUE_CFG, &cmd, sizeof (cmd));
 	if (error == 0) {
 		a->tx[ac].configured = enable;
 		a->tx[ac].released = !enable;
@@ -3674,18 +3724,26 @@ iwm_association_station(struct iwm_softc *sc, boolean_t update,
 		    (3U << 26) | (3U << 28));
 		if (sc->connection.node->in_flags & IEEE80211_NODE_HT) {
 			uint_t param = sc->connection.node->in_htparam;
+			uint_t density = (param >> 2) & 7;
 
 			/* Peer AMPDU limit/density; SISO/width20 stay clear. */
 			cmd.station_flags_msk |= LE_32((7U << 19) | (7U << 23));
+			/*
+			 * OpenBSD iwm_add_sta_cmd sets a density only for
+			 * 2/4/8/16 us spacing (codes 4-7); shorter spacings
+			 * are sent as "none".
+			 */
+			if (density < 4)
+				density = 0;
 			cmd.station_flags |= LE_32((param & 3) << 19 |
-			    ((param >> 2) & 7) << 23);
+			    density << 23);
 		}
 		if (update)
 			cmd.modify_mask = (1U << 1) | (1U << 7);
 		else
 			bcopy(sc->connection.node->in_bssid, cmd.addr, 6);
 	}
-	error = iwm_control(sc, 0x18, &cmd, sizeof (cmd));
+	error = iwm_control(sc, IWM_ADD_STA, &cmd, sizeof (cmd));
 	if (error == 0 && (sc->run->response_len != 4 ||
 	    (iwm_u32(sc->run->response) & 0xff) != 1))
 		error = EIO;
@@ -3886,7 +3944,7 @@ iwm_lq_send(struct iwm_softc *sc)
 
 	if ((error = iwm_lq_build(sc, &lq)) != 0)
 		return (error);
-	return (iwm_control(sc, 0x4e, &lq, sizeof (lq)));
+	return (iwm_control(sc, IWM_LQ_CMD, &lq, sizeof (lq)));
 }
 
 /* Connection worker, once a second, sc->lock held. */
@@ -4025,7 +4083,8 @@ iwm_ba_work(struct iwm_softc *sc)
 			bzero(&flush, sizeof (flush));
 			flush.queues_ctl = LE_32(a->queues);
 			flush.flush_ctl = LE_16(2);
-			error = iwm_control(sc, 0x1e, &flush, sizeof (flush));
+			error = iwm_control(sc, IWM_TXPATH_FLUSH, &flush,
+			    sizeof (flush));
 		}
 		iwm_nic_unlock(sc);
 		end = ddi_get_lbolt() + drv_usectohz(IWM_WAIT_US);
@@ -4314,7 +4373,7 @@ iwm_association_tx(struct iwm_softc *sc, mblk_t *mp, boolean_t management,
 		goto out;
 	cmd = &ring->cmd[ring->cur];
 	bzero(cmd, sizeof (*cmd));
-	cmd->hdr.code = 0x1c;
+	cmd->hdr.code = IWM_TX_CMD;
 	cmd->hdr.idx = ring->cur;
 	cmd->hdr.qid = ring->qid;
 	tx = (void *)cmd->data;
@@ -4838,7 +4897,7 @@ iwm_association_quota(struct iwm_softc *sc, boolean_t running)
 
 	if (sc->fw.capa[1] & (1U << 12))
 		return (0);
-	if (!iwm_command_version(&sc->fw, 0x2c, 2))
+	if (!iwm_command_version(&sc->fw, IWM_TIME_QUOTA_CMD, 2))
 		return (ENOTSUP);
 	bzero(quota, sizeof (quota));
 	for (i = 0; i < 4; i++)
@@ -4849,7 +4908,7 @@ iwm_association_quota(struct iwm_softc *sc, boolean_t running)
 	} else if (running) {
 		return (EINVAL);
 	}
-	return (iwm_control(sc, 0x2c, quota, sizeof (quota)));
+	return (iwm_control(sc, IWM_TIME_QUOTA_CMD, quota, sizeof (quota)));
 }
 
 static int
@@ -4870,7 +4929,8 @@ iwm_association_sf(struct iwm_softc *sc, boolean_t running)
 		command[14 + 2 * i] = LE_32(running ?
 		    (i == 2 ? 2016 : 320) : 160);
 	}
-	return (iwm_control(sc, 0xd1, command, sizeof (command)));
+	return (iwm_control(sc, IWM_REPLY_SF_CFG_CMD, command,
+	    sizeof (command)));
 }
 
 /* Donor RUN stop retains the legacy PHY/MAC/binding/station and queues. */
@@ -4921,9 +4981,9 @@ iwm_association_run(struct iwm_softc *sc)
 	multicast[0] = 1;
 	multicast[3] = 1;
 	bcopy(sc->connection.node->in_bssid, multicast + 4, 6);
-	if ((error = iwm_control(sc, 0xd0, multicast,
+	if ((error = iwm_control(sc, IWM_MCAST_FILTER_CMD, multicast,
 	    sizeof (multicast))) != 0 ||
-	    (error = iwm_control(sc, 0x77, device_power,
+	    (error = iwm_control(sc, IWM_POWER_TABLE_CMD, device_power,
 	    sizeof (device_power))) != 0)
 		return (error);
 	bzero(&power, sizeof (power));
@@ -4932,7 +4992,8 @@ iwm_association_run(struct iwm_softc *sc)
 	keepalive = (3U * a->dtim_period * sc->connection.node->in_intval +
 	    999) / 1000;
 	power.keep_alive_seconds = LE_16(MAX(25, keepalive));
-	if ((error = iwm_control(sc, 0xa9, &power, sizeof (power))) != 0 ||
+	if ((error = iwm_control(sc, IWM_MAC_PM_POWER_TABLE, &power,
+	    sizeof (power))) != 0 ||
 	    (error = iwm_association_quota(sc, B_TRUE)) != 0)
 		return (error);
 	return (iwm_unprotect_session(sc));
@@ -5117,7 +5178,7 @@ iwm_scan_configure(struct iwm_softc *sc)
 		return (error);
 	/* Donor queue setup publishes zero, never a host frame. */
 	iwm_wr(sc, IWM_HBUS_TARG_WRPTR, IWM_AUX_QUEUE << 8);
-	error = iwm_control(sc, 0x1d, &queue, sizeof (queue));
+	error = iwm_control(sc, IWM_SCD_QUEUE_CFG, &queue, sizeof (queue));
 	iwm_nic_unlock(sc);
 	if (error != 0)
 		return (error);
@@ -5130,7 +5191,8 @@ iwm_scan_configure(struct iwm_softc *sc)
 	station.mac_id_n_color = LE_32(4);
 	station.tfd_queue_msk = LE_32(1U << IWM_AUX_QUEUE);
 	station.tid_disable_tx = LE_16(0xffff);
-	if ((error = iwm_control(sc, 0x18, &station, sizeof (station))) != 0)
+	if ((error = iwm_control(sc, IWM_ADD_STA, &station,
+	    sizeof (station))) != 0)
 		return (error);
 	if (sc->run->response_len != 4 ||
 	    (iwm_u32(sc->run->response) & 0xff) != 1)
@@ -5155,7 +5217,8 @@ iwm_scan_configure(struct iwm_softc *sc)
 	bcopy(s->channel, cfg->channel_array, s->channels);
 	if ((error = iwm_checkpoint(sc, "scan-config-zero-contexts")) != 0)
 		return (error);
-	if ((error = iwm_control(sc, 0x10c, config, sizeof (config))) != 0)
+	if ((error = iwm_control(sc, IWM_SCAN_CFG_CMD, config,
+	    sizeof (config))) != 0)
 		return (error);
 	s->configured = B_TRUE;
 	return (iwm_checkpoint(sc, "scan-configured"));
@@ -5245,7 +5308,8 @@ iwm_scan_terminate(struct iwm_softc *sc)
 			return (EIO);
 		s->abort_requested = B_TRUE;
 		s->abort_commands++;
-		error = iwm_control(sc, 0x10e, abort, sizeof (abort));
+		error = iwm_control(sc, IWM_SCAN_ABORT_UMAC, abort,
+		    sizeof (abort));
 		if (error != 0)
 			return (error);
 		end = ddi_get_lbolt() + iwm_scan_ticks(s);
@@ -5303,7 +5367,8 @@ iwm_passive_scan(struct iwm_softc *sc)
 		s->submitted = B_TRUE;
 		s->outstanding = B_TRUE;
 		s->accepting = B_TRUE;
-		error = iwm_control(sc, 0x10d, request, sizeof (request));
+		error = iwm_control(sc, IWM_SCAN_REQ_UMAC, request,
+		    sizeof (request));
 		if (error == 0 && !s->complete)
 			error = iwm_checkpoint(sc, "scan-running");
 	}
@@ -5658,7 +5723,7 @@ iwm_device_stop(struct iwm_softc *sc, boolean_t final)
 	struct iwm_runtime *r = sc->run;
 	uint_t ch;
 	uint32_t mask;
-	int error = 0;
+	int error = 0, dma_error = 0;
 
 	r->lar.ready = B_FALSE;
 	if (r->stop_failed)
@@ -5676,7 +5741,7 @@ iwm_device_stop(struct iwm_softc *sc, boolean_t final)
 	(void) iwm_rd(sc, IWM_CSR_INT_MASK);
 	if (r->tx_started || r->rx_started) {
 		if (iwm_nic_lock(sc) != 0) {
-			error = EIO;
+			dma_error = EIO;
 		} else {
 			iwm_prph_write(sc, IWM_SCD_TXFACT, 0);
 			for (ch = 0; ch < IWM_FH_TCSR_CHNL_NUM; ch++)
@@ -5687,13 +5752,13 @@ iwm_device_stop(struct iwm_softc *sc, boolean_t final)
 				    IWM_FH_TSSR_TX_STATUS_REG_MSK_CHNL_IDLE(ch);
 				if (iwm_poll(sc, IWM_FH_TSSR_TX_STATUS_REG,
 				    mask, mask, 4000) != 0)
-					error = ETIMEDOUT;
+					dma_error = ETIMEDOUT;
 			}
 			iwm_wr(sc, IWM_FH_MEM_RCSR_CHNL0_CONFIG_REG, 0);
 			if (iwm_poll(sc, IWM_FH_MEM_RSSR_RX_STATUS_REG,
 			    IWM_FH_RSSR_CHNL0_RX_STATUS_CHNL_IDLE,
 			    IWM_FH_RSSR_CHNL0_RX_STATUS_CHNL_IDLE, 10000) != 0)
-				error = ETIMEDOUT;
+				dma_error = ETIMEDOUT;
 			iwm_nic_unlock(sc);
 		}
 	}
@@ -5727,6 +5792,15 @@ iwm_device_stop(struct iwm_softc *sc, boolean_t final)
 	    error, iwm_rd(sc, IWM_CSR_HW_REV), iwm_rd(sc, IWM_CSR_GP_CNTRL),
 	    iwm_rd(sc, IWM_CSR_RESET), iwm_rd(sc, IWM_CSR_INT_MASK),
 	    r->causes, r->fh_causes);
+	/*
+	 * A crashed firmware may never idle its DMA channels.  As in OpenBSD
+	 * iwm_stop_device, that is not fatal once bus mastering is confirmed
+	 * disabled and the device has been reset: nothing can touch host
+	 * memory any more.  Only a failed master-disable retains resources.
+	 */
+	if (error == 0 && dma_error != 0)
+		dev_err(sc->dip, CE_NOTE, "!iwm DMA channels not idle at stop "
+		    "(error=%d); master disabled, continuing", dma_error);
 	if (error != 0) {
 		r->stop_failed = B_TRUE;
 		return (error);
@@ -6233,13 +6307,15 @@ iwm_connection_rollback(struct iwm_softc *sc)
 		error = iwm_association_run_stop(sc);
 	if (error == 0 && a->station) {
 		error = iwm_association_station(sc, B_TRUE, B_TRUE);
-		if (error == 0 && !iwm_command_version(&sc->fw, 0x1e, 1))
+		if (error == 0 &&
+		    !iwm_command_version(&sc->fw, IWM_TXPATH_FLUSH, 1))
 			error = ENOTSUP;
 		if (error == 0) {
 			bzero(&flush, sizeof (flush));
 			flush.queues_ctl = LE_32(a->queues);
 			flush.flush_ctl = LE_16(2);
-			error = iwm_control(sc, 0x1e, &flush, sizeof (flush));
+			error = iwm_control(sc, IWM_TXPATH_FLUSH, &flush,
+			    sizeof (flush));
 		}
 	}
 	end = ddi_get_lbolt() + drv_usectohz(IWM_WAIT_US);
@@ -6263,7 +6339,8 @@ iwm_connection_rollback(struct iwm_softc *sc)
 			error = iwm_association_queue(sc, ac, B_FALSE);
 	}
 	if (error == 0 && a->station) {
-		error = iwm_control(sc, 0x19, &remove, sizeof (remove));
+		error = iwm_control(sc, IWM_REMOVE_STA, &remove,
+		    sizeof (remove));
 		if (error == 0)
 			a->station = B_FALSE;
 	}

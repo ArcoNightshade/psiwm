@@ -63,9 +63,25 @@ Deviations:
 | 2026-10-19 | F1 | RF_KILL cause is unmasked in run mode; switch-on fails the runtime (recovered by the restart-on-acquire path, which refuses while the switch is on). | Syntax-checked only. |
 | 2026-10-19 | F7/stats | `m_stat` reports real packet/byte/error counts and link speed from `ic_stats` and the LQ ladder; `is_tx_retries`, `is_tx_failed`, `is_tx_mcast` maintained. | Syntax-checked only. |
 
+| 2026-11-14 | F10 | All raw host command / notification numbers in if_iwmhw.c replaced by OpenBSD-named constants (43 sites). | Compiled before and after to assembly: identical apart from one `__LINE__`. |
+| 2026-11-14 | F11 (8265) | Host test: `iwm_fw_parse` accepts `iwm-8265-36`; it has the same version hash, section layout and the command versions the driver gates on (0x08, 0x28, 0x2b, 0x2c, 0x1e) as `iwm-8000C-36`. API/capability bits differ only in api[0] bit 16 and capa[0] bit 25, which no gate in the driver uses. | Verified on host (docs/tests/run.sh). 8265 calibration/PHY-DB behaviour still needs hardware. |
+| 2026-11-14 | F2 | Rate ladder and rate encoding unit-tested on host for 11b, 11g, 11n, sparse/unsorted MCS sets and an empty rate set. | Verified on host (docs/tests/run.sh). |
+| 2026-11-14 | D3 (new) | `iwm_device_stop`: TX/RX DMA channel idle timeouts (and a failed NIC lock) are now logged instead of fatal, provided bus-master disable is confirmed; OpenBSD `iwm_stop_device` never fails on these. Previously a crashed firmware that never idled would mark the stop failed and wedge the driver until reboot, defeating the restart path. | Syntax-checked only. |
+| 2026-11-14 | F7 | Missed-beacon notification: more than 30 consecutive missed beacons ends the connection (ENETRESET) so the link goes down and can be re-established. OpenBSD probes after 7; no probe step here. | Syntax-checked only. |
+| 2026-11-14 | ADD_STA | A-MPDU density codes below 2 us are sent as 0, as in OpenBSD `iwm_add_sta_cmd`. | Syntax-checked only. |
+| 2026-11-14 | F12 | Reviewed: remaining EPROTO cases in TX completion are driver/firmware desynchronisation where slots cannot be reclaimed safely; they stay fatal and now recover via the restart path. TX failure *status* was already non-fatal. | Review. |
+
+Audit results added 2026-11-14 (all MATCH): firmware TLV parser (strictly pinned to API 36,
+version hash ca7b901d and the 8000-family section layout; unknown TLVs are rejected), NVM
+parse (version, SKU, radio config, antennas, LAR offset, MAC override and WFMP fallback, 51
+channel flags), stop sequence register order (APM stop, master disable, SW reset), binding,
+ADD_STA flags. The donor snapshot named in the driver headers is the same revision as current
+OpenBSD master (if_iwm.c v1.419, if_iwmvar.h v1.79), so there are no newer OpenBSD fixes to port.
+
 Build checking done in this environment: `gcc -fsyntax-only` against the tree's own headers
-(no errors or warnings in if_iwm.c, if_iwmhw.c, if_iwmfw.c) and `cstyle -pP` (clean). No link,
-no `hdrchk`, no `lint`, no run on hardware.
+(no errors or warnings in if_iwm.c, if_iwmhw.c, if_iwmfw.c), `cstyle -pP` (clean), and the host
+tests in docs/tests/run.sh. No link, no `hdrchk`, no `lint`, no `mandoc -Tlint`, no run on
+hardware.
 
 ## Remaining audit queue (TODO)
 

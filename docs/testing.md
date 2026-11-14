@@ -44,3 +44,14 @@ returns to passive attach. Keep a console open: a bug can panic the machine.
   in dmesg, link down, and recovery on the next `dladm connect-wifi` after switching back.
 - On a firmware error, dmesg should show "iwm firmware error id=..." (save it).
 - 8265 only: confirm `iwm-8265-36` loads (dmesg firmware-open checkpoint).
+
+## 6. Host tests (no illumos needed)
+    docs/tests/run.sh
+Checks that both packaged firmware images pass `iwm_fw_parse` and that the rate ladder and
+rate encoding produce the expected tables. Run after any change to if_iwmfw.c or the rate code.
+
+## 7. Checks for the 2026-11-14 changes
+- Power off the AP while connected: expect "iwm AP lost" within a few seconds and link down.
+- After any firmware error, `dladm connect-wifi` again: expect "iwm runtime error=...; restarting"
+  and a working connection, not a permanently failed driver.
+- `man iwm` renders; `mandoc -Tlint usr/src/man/man4d/iwm.4d` is clean.

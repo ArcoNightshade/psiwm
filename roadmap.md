@@ -92,6 +92,12 @@ public registration default-on.
 Still open: suspend/resume, connection-worker redesign (F6), hardware CCMP (F5), 5 GHz / HT40 /
 MIMO / VHT, beacon-loss and roaming, background scan, remaining audit queue, man page.
 
+Added 2026-11-14 (see docs/audit.md): named command constants, stop-path fix for crashed
+firmware, beacon-loss disconnect, man page iwm(4D), host tests (docs/tests/run.sh), 8265
+firmware verified against the parser. Audit of firmware parser, NVM, stop sequence, binding
+and ADD_STA complete. Not yet audited: scan request layout, time events, power commands, RX
+descriptor/RSSI, aggregation details, FreeBSD and Linux cross-checks.
+
 ## 3. Stages
 
 Each stage ends with: documentation updated (this file and `docs/` notes), cstyle/hdrchk/lint

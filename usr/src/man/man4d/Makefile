@@ -202,6 +202,7 @@ i386_MANFILES=	ahci.4d		\
 		ipw.4d		\
 		iwh.4d		\
 		iwi.4d		\
+		iwm.4d		\
 		iwn.4d		\
 		mega_sas.4d	\
 		mlxcx.4d	\

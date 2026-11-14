@@ -29,6 +29,9 @@ dir  path=kernel/firmware group=sys
 dir  path=kernel/firmware/iwm group=sys
 file path=kernel/firmware/iwm/iwm-8000C-36
 file path=kernel/firmware/iwm/iwm-8265-36
+dir  path=usr/share/man
+dir  path=usr/share/man/man4d
+file path=usr/share/man/man4d/iwm.4d
 driver name=iwm perms="* 0666 root sys" clone_perms="iwm 0666 root sys" \
     alias=pciex8086,24f3 \
     alias=pciex8086,24f4 \

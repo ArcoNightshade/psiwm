@@ -1,0 +1,55 @@
+.\"
+.\" This file and its contents are supplied under the terms of the
+.\" Common Development and Distribution License ("CDDL"), version 1.0.
+.\" You may only use this file in accordance with the terms of version
+.\" 1.0 of the CDDL.
+.\"
+.\" A full copy of the text of the CDDL should have accompanied this
+.\" source.  A copy of the CDDL is also available via the Internet at
+.\" http://www.illumos.org/license/CDDL.
+.\"
+.\"
+.\" Copyright 2026 lex0de <lex0de@tuta.com>
+.\"
+.Dd November 14, 2026
+.Dt IWM 4D
+.Os
+.Sh NAME
+.Nm iwm
+.Nd Intel(R) Dual Band Wireless-AC 8260 and 8265 Driver
+.Sh DESCRIPTION
+The
+.Nm
+driver is a GLDv3-based
+.Em 802.11b/g/n
+wireless NIC driver for the Intel Dual Band Wireless-AC 8260 and 8265
+(8000 series) adapters.
+It supports station mode in infrastructure networks, open and WPA2-PSK
+(CCMP) networks, HT20 operation on the 2.4 GHz band with a single
+spatial stream, and transmit A-MPDU aggregation.
+.Pp
+The 5 GHz band, 40 MHz channels, multiple spatial streams, 802.11ac,
+power save, and suspend and resume are not currently supported.
+.Sh CONFIGURATION
+The following properties may be set in
+.Pa /kernel/drv/iwm.conf :
+.Bl -tag -width Ds
+.It Sy iwm-public-scan
+When set to 0 the driver attaches passively and does not register a
+wireless link.
+The default is 1.
+.El
+.Sh FILES
+.Bl -tag -compact -width Pa
+.It Pa /dev/iwm*
+Special character device.
+.It Pa /kernel/drv/amd64/iwm
+64-bit ELF kernel module (x86).
+.It Pa /kernel/firmware/iwm/iwm-8000C-36
+Firmware for the 8260.
+.It Pa /kernel/firmware/iwm/iwm-8265-36
+Firmware for the 8265.
+.El
+.Sh SEE ALSO
+.Xr dladm 8 ,
+.Xr wificonfig 8
