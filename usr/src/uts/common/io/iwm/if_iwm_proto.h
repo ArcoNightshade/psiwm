@@ -193,7 +193,8 @@ static void iwm_rx_rx_phy_cmd(struct iwm_softc *sc, struct iwm_rx_packet *pkt,
 static int iwm_get_noise(const struct iwm_statistics_rx_non_phy *stats);
 static int iwm_rx_hwdecrypt(struct iwm_softc *sc, mblk_t *m,
     uint32_t rx_pkt_status);
-static void iwm_rx_frame(struct iwm_softc *sc, mblk_t *m, int rssi);
+static void iwm_rx_frame(struct iwm_softc *sc, mblk_t *m, int rssi,
+    uint32_t tstamp);
 static void iwm_rx_deliver(struct iwm_softc *sc, mblk_t *m);
 static void iwm_rx_mpdu(struct iwm_softc *sc, void *pktdata, size_t maxlen);
 static void iwm_ra_peer(struct iwm_softc *sc, struct iwm_node *in,

@@ -3014,6 +3014,8 @@ iwm_mac_ctxt_task(void *arg)
 	int err;
 
 	mutex_enter(&sc->sc_mtx);
+	/* Clear first: a request made while we run requeues us. */
+	sc->sc_task_pending &= ~IWM_TASK_MAC_CTXT;
 	if ((sc->sc_flags & IWM_FLAG_SHUTDOWN) ||
 	    ic->ic_state != IEEE80211_S_RUN) {
 		iwm_task_done(sc, IWM_TASK_MAC_CTXT);
@@ -3218,6 +3220,7 @@ iwm_ba_task(void *arg)
 	int tid, err = 0;
 
 	mutex_enter(&sc->sc_mtx);
+	sc->sc_task_pending &= ~IWM_TASK_BA;	/* requeue on new work */
 	if ((sc->sc_flags & IWM_FLAG_SHUTDOWN) ||
 	    ic->ic_state != IEEE80211_S_RUN) {
 		sc->ba_rx.start_tidmask = sc->ba_rx.stop_tidmask = 0;
@@ -4257,10 +4260,16 @@ iwm_rx_hwdecrypt(struct iwm_softc *sc, mblk_t *m, uint32_t rx_pkt_status)
  * The normalised RSSI rides in b_band.
  */
 static void
-iwm_rx_frame(struct iwm_softc *sc, mblk_t *m, int rssi)
+iwm_rx_frame(struct iwm_softc *sc, mblk_t *m, int rssi, uint32_t tstamp)
 {
 	ASSERT(MUTEX_HELD(&sc->sc_mtx));
 	m->b_band = (uchar_t)MAX(0, MIN(rssi, 255));
+	/*
+	 * Device timestamp (GP2, usec) for net80211's in_rstamp; the MAC
+	 * context uses it for DTIM timing (OpenBSD rxi_tstamp).  b_prev is
+	 * unused while the frame sits on our list.
+	 */
+	m->b_prev = (mblk_t *)(uintptr_t)tstamp;
 	m->b_next = NULL;
 	if (sc->sc_rx_tail == NULL)
 		sc->sc_rx_head = m;
@@ -4278,6 +4287,7 @@ iwm_rx_deliver(struct iwm_softc *sc, mblk_t *m)
 	struct ieee80211com *ic = &sc->sc_ic;
 	struct ieee80211_node *ni;
 	mblk_t *next;
+	uint32_t tstamp;
 
 	ASSERT(!MUTEX_HELD(&sc->sc_mtx));
 	for (; m != NULL; m = next) {
@@ -4285,7 +4295,9 @@ iwm_rx_deliver(struct iwm_softc *sc, mblk_t *m)
 		m->b_next = NULL;
 		ni = ieee80211_find_rxnode(ic,
 		    (struct ieee80211_frame *)m->b_rptr);
-		(void) ieee80211_input(ic, m, ni, m->b_band, 0);
+		tstamp = (uint32_t)(uintptr_t)m->b_prev;
+		m->b_prev = NULL;
+		(void) ieee80211_input(ic, m, ni, m->b_band, tstamp);
 		ieee80211_free_node(ni);
 	}
 }
@@ -4344,7 +4356,7 @@ iwm_rx_mpdu(struct iwm_softc *sc, void *pktdata, size_t maxlen)
 	rssi = (0 - IWM_MIN_DBM) + rssi;	/* normalize */
 	rssi = MIN(rssi, ic->ic_maxrssi);	/* clip to max. 100% */
 
-	iwm_rx_frame(sc, m, rssi);
+	iwm_rx_frame(sc, m, rssi, le32toh(phy_info->system_timestamp));
 }
 
 /* Describe the peer for MiRA (OpenBSD reads this from ieee80211_node). */
@@ -7228,9 +7240,14 @@ static void
 iwm_task_done(struct iwm_softc *sc, uint32_t task)
 {
 	ASSERT(MUTEX_HELD(&sc->sc_mtx));
-	sc->sc_task_pending &= ~task;
-	if (task == IWM_TASK_INIT)
+	/*
+	 * Tasks clear their pending bit when they start (iwm_task_start),
+	 * so a request made while they run queues them again.
+	 */
+	if (task == IWM_TASK_INIT) {
+		sc->sc_task_pending &= ~task;
 		return;
+	}
 	ASSERT(sc->sc_task_refs > 0);
 	sc->sc_task_refs--;
 	cv_broadcast(&sc->sc_task_cv);
@@ -7251,6 +7268,7 @@ iwm_defer_task(void *arg)
 	uint16_t bar_ssn[IWM_MAX_TID_COUNT];
 
 	mutex_enter(&sc->sc_mtx);
+	sc->sc_task_pending &= ~IWM_TASK_DEFER;	/* requeue on new work */
 	endscan = sc->sc_endscan_pending;
 	bmiss = sc->sc_bmiss_pending;
 	bar = sc->sc_bar_pending;
@@ -7264,7 +7282,11 @@ iwm_defer_task(void *arg)
 	}
 	mutex_exit(&sc->sc_mtx);
 
-	if (endscan)
+	/*
+	 * illumos ieee80211_end_scan() does not check the state; a late
+	 * scan-complete after a move to INIT would otherwise start a join.
+	 */
+	if (endscan && ic->ic_state == IEEE80211_S_SCAN)
 		ieee80211_end_scan(ic);
 	if (bmiss)
 		ieee80211_beacon_miss(ic);
@@ -7740,7 +7762,9 @@ iwm_node_alloc(struct ieee80211com *ic)
 	struct iwm_node *in;
 
 	_NOTE(ARGUNUSED(ic))
-	in = kmem_zalloc(sizeof (struct iwm_node), KM_NOSLEEP);
+	/* net80211 asserts success when called from thread context. */
+	in = kmem_zalloc(sizeof (struct iwm_node),
+	    servicing_interrupt() ? KM_NOSLEEP : KM_SLEEP);
 	if (in == NULL)
 		return (NULL);
 	/* No firmware Rx aggregation until a BA session is set up. */
@@ -8114,8 +8138,12 @@ iwm_newstate_task(void *psc)
 			/* Firmware is no longer scanning. Do another scan. */
 			call_net80211 = 0;
 			goto next_scan;
-		} else
+		} else {
 			iwm_led_blink_stop(sc);
+			/* Leaving SCAN early (disconnect, stop). */
+			if (sc->sc_flags & IWM_FLAG_SCANNING)
+				(void) iwm_scan_abort(sc);
+		}
 	}
 
 	if (nstate <= ostate) {
