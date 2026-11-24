@@ -57,3 +57,6 @@ usr/src/test/util-tests/tests/bunyan/btest
 usr/src/test/zfs-tests/cmd/watch_dir/watch_dir
 usr/src/tools/env/omnios-illumos-gate
 usr/src/tools/env/omnios-illumos-omnios
+
+# iwm hardware test settings (may contain a WPA key)
+docs/tests/hwtest.conf

@@ -60,6 +60,11 @@ if_iwm_proto.h matches if_iwm.c (regenerate with docs/tests/genproto.py).
 - `man iwm` renders; `mandoc -Tlint usr/src/man/man4d/iwm.4d` is clean.
 
 ## 8. Checks for the OpenBSD re-port (2026-11-24)
+Automated: `cp docs/tests/hwtest.conf.example docs/tests/hwtest.conf`, fill in the networks,
+then as root (from a `bldenv` shell if it should build) run `docs/tests/hwtest.sh`. It runs
+the steps below, stops at the first failure and writes /var/tmp/iwm-hwtest-<time>.tar.gz to
+send back. It replaces net80211 and iwm (originals kept; `hwtest.sh restore` puts them back)
+and may ask for one reboot if net80211 is in use. Manual steps:
 Sections 4, 5 and 7 described the previous driver; their log messages no longer exist.
 Run in this order and stop at the first failure (send dmesg and the step number):
 1. `modload`/attach: dmesg shows "hw rev 0x..., fw ver 36.ca7b901d.0, address ..."

@@ -1,0 +1,28 @@
+# Copy to hwtest.conf (same directory) and edit.  Lines are shell syntax.
+# Leave a value empty to skip that test.
+
+# Network without a password (step: open).
+OPEN_ESSID=""
+
+# WPA2-PSK network (step: wpa).  The key is written to a 0600 temp file for
+# dladm create-secobj and deleted afterwards; it is never put in the report.
+WPA_ESSID=""
+WPA_KEY=""
+
+# Host to ping once connected; default is the DHCP default router.
+PING_HOST=""
+
+# iperf3 server on your network ("iperf3 -s" on another machine).
+IPERF_SERVER=""
+IPERF_SECONDS=30
+
+# Long ping to look for stalls, in seconds.
+SOAK_SECONDS=300
+
+# Disconnect/connect cycles.
+CYCLES=10
+
+# Build the modules first (needs the illumos build environment: run the
+# script from a shell set up with "bldenv <your env file>").  Set to 0 to use
+# modules you already built (obj64 directories in the tree).
+BUILD=1
