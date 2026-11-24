@@ -11,7 +11,7 @@
 .\"
 .\" Copyright 2026 lex0de <lex0de@tuta.com>
 .\"
-.Dd November 14, 2026
+.Dd November 24, 2026
 .Dt IWM 4D
 .Os
 .Sh NAME
@@ -21,24 +21,34 @@
 The
 .Nm
 driver is a GLDv3-based
-.Em 802.11b/g/n
+.Em 802.11a/b/g/n
 wireless NIC driver for the Intel Dual Band Wireless-AC 8260 and 8265
 (8000 series) adapters.
-It supports station mode in infrastructure networks, open and WPA2-PSK
-(CCMP) networks, HT20 operation on the 2.4 GHz band with a single
-spatial stream, and transmit A-MPDU aggregation.
+It is a port of the OpenBSD
+.Nm
+driver.
 .Pp
-The 5 GHz band, 40 MHz channels, multiple spatial streams, 802.11ac,
-power save, and suspend and resume are not currently supported.
+It supports station mode in infrastructure networks, open, WEP and
+WPA/WPA2 networks (pairwise CCMP keys in hardware, other ciphers in
+software), the 2.4 GHz and, where the adapter allows it, 5 GHz bands,
+20 and 40 MHz channels, one or two spatial streams with short guard
+interval, receive and transmit A-MPDU aggregation, MiRA rate adaptation
+for 802.11n and AMRR for legacy rates, firmware location-aware
+regulatory support, and suspend and resume.
+The driver restarts the device automatically after a firmware error, a
+hardware error, a transmit timeout or a change of the RF-kill switch.
+.Pp
+802.11ac (VHT) rates, background scanning, monitor mode, access point
+and IBSS modes, and power save are not supported.
 .Sh CONFIGURATION
-The following properties may be set in
-.Pa /kernel/drv/iwm.conf :
-.Bl -tag -width Ds
-.It Sy iwm-public-scan
-When set to 0 the driver attaches passively and does not register a
-wireless link.
-The default is 1.
-.El
+The driver is configured with
+.Xr dladm 8 .
+It has no
+.Pa driver.conf
+properties.
+The firmware image must be installed in
+.Pa /kernel/firmware/iwm
+before the driver attaches.
 .Sh FILES
 .Bl -tag -compact -width Pa
 .It Pa /dev/iwm*

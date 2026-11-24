@@ -83,6 +83,13 @@ Build checking done in this environment: `gcc -fsyntax-only` against the tree's 
 tests in docs/tests/run.sh. No link, no `hdrchk`, no `lint`, no `mandoc -Tlint`, no run on
 hardware.
 
+## Status after the OpenBSD re-port (2026-11-24)
+
+The findings and fix log above concern the replaced driver. The new driver is OpenBSD code
+with the deviations listed in docs/port.md; upstream bugs found during the port are listed
+there too. The queue below is kept for the cross-checks (FreeBSD, Linux) still to do on the
+new code.
+
 ## Remaining audit queue (TODO)
 
 1. NVM read, NVM parse (HW address, SKU, channel flags, LAR/MCC) vs iwm_nvm_init / iwm_parse_nvm_data.

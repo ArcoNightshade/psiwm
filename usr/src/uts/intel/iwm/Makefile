@@ -26,8 +26,10 @@ include $(UTSBASE)/intel/Makefile.intel
 ALL_TARGET	= $(BINARY)
 INSTALL_TARGET	= $(BINARY) $(ROOTMODULE) $(ROOTFIRMWARE)
 
-# Private scan-table attachment; no public MAC registration.
 LDFLAGS		+= -Nmisc/mac -Nmisc/net80211
+
+# Ported from OpenBSD; keeps its shape (see if_iwmcompat.h).
+SMATCH		= off
 
 .KEEP_STATE:
 
@@ -38,13 +40,17 @@ clobber:	$(CLOBBER_DEPS)
 install:	$(INSTALL_DEPS)
 
 check:
-	$(CSTYLE) -pP $(UTSBASE)/common/io/iwm/if_iwmfw.c
-	$(CSTYLE) -pP $(UTSBASE)/common/io/iwm/if_iwmhw.c
-	$(CSTYLE) -pP $(UTSBASE)/common/io/iwm/if_iwmfw.h
-	$(HDRCHK) $(UTSBASE)/common/io/iwm/if_iwmfw.h
 	$(CSTYLE) -pP $(UTSBASE)/common/io/iwm/if_iwm.c
+	$(CSTYLE) -pP $(UTSBASE)/common/io/iwm/if_iwm_ra.c
+	$(CSTYLE) -pP $(UTSBASE)/common/io/iwm/if_iwm_amrr.c
+	$(CSTYLE) -pP $(UTSBASE)/common/io/iwm/if_iwm_ra.h
+	$(CSTYLE) -pP $(UTSBASE)/common/io/iwm/if_iwm_proto.h
+	$(CSTYLE) -pP $(UTSBASE)/common/io/iwm/if_iwmcompat.h
 	$(CSTYLE) -pP $(UTSBASE)/common/io/iwm/if_iwmreg.h
 	$(CSTYLE) -pP $(UTSBASE)/common/io/iwm/if_iwmvar.h
+	$(HDRCHK) $(UTSBASE)/common/io/iwm/if_iwm_ra.h
+	$(HDRCHK) $(UTSBASE)/common/io/iwm/if_iwm_proto.h
+	$(HDRCHK) $(UTSBASE)/common/io/iwm/if_iwmcompat.h
 	$(HDRCHK) $(UTSBASE)/common/io/iwm/if_iwmreg.h
 	$(HDRCHK) $(UTSBASE)/common/io/iwm/if_iwmvar.h
 

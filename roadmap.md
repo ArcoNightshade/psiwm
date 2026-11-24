@@ -98,6 +98,24 @@ firmware verified against the parser. Audit of firmware parser, NVM, stop sequen
 and ADD_STA complete. Not yet audited: scan request layout, time events, power commands, RX
 descriptor/RSSI, aggregation details, FreeBSD and Linux cross-checks.
 
+## 2c. OpenBSD re-port (2026-11-24)
+
+The driver was replaced by a port of OpenBSD `if_iwm.c` v1.419 (with `if_iwmreg.h` v1.70,
+`if_iwmvar.h` v1.79, `ieee80211_ra.c` v1.5, `ieee80211_amrr.c` v1.12) onto illumos DDI,
+GLDv3 and net80211. The previous `if_iwmfw.c`/`if_iwmhw.c` implementation is gone; items
+F1-F13 of docs/audit.md apply to it, not to the new code. Port notes: docs/port.md.
+
+Feature parity with OpenBSD for the 8260/8265 (11n): INIT/regular firmware, paging, PHY DB,
+NVM/LAR/MCC, UMAC scan, 2.4 and 5 GHz, HT20/HT40, 1-2 streams, SGI, Rx and Tx A-MPDU,
+MiRA + AMRR with firmware LQ tables, hardware CCMP for pairwise keys, beacon-loss handling,
+error recovery (firmware/hardware error, Tx timeout, RF-kill, CT-kill), suspend/resume.
+Not ported (later phases): 802.11ac/VHT (needs net80211 VHT support), background scan,
+monitor mode, MSI-X, 7000/9000 families and multi-queue Rx.
+
+State: syntax/type-checked against the tree headers, cstyle/hdrchk clean, host unit tests
+pass (docs/tests/run.sh). NOT yet compiled with the illumos toolchain, linked or run on
+hardware. Next step: docs/testing.md section 8 on the Tribblix machine.
+
 ## 3. Stages
 
 Each stage ends with: documentation updated (this file and `docs/` notes), cstyle/hdrchk/lint

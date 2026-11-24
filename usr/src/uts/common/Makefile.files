@@ -1907,7 +1907,7 @@ IWH_OBJS += iwh.o
 
 IWK_OBJS += iwk2.o
 
-IWM_OBJS += if_iwm.o if_iwmfw.o if_iwmhw.o
+IWM_OBJS += if_iwm.o if_iwm_ra.o if_iwm_amrr.o
 
 IWN_OBJS += if_iwn.o
 

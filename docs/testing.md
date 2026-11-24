@@ -22,8 +22,9 @@ Send both logs. Fix compiler errors/warnings before anything else.
     add_drv -i '"pciex8086,24f3" "pciex8086,24f4" "pciex8086,24fd"' iwm   # after a clean build
 Firmware files: iwm-8000C-36 (8260) and iwm-8265-36 (8265) into /kernel/firmware/iwm/.
     dmesg | tail -50 ; modinfo | grep iwm
-Public WiFi registration is now the default. `iwm-public-scan=0` in /kernel/drv/iwm.conf
-returns to passive attach. Keep a console open: a bug can panic the machine.
+The driver registers a WiFi link at attach; the firmware must already be installed or
+attach fails with "could not load firmware". Keep a console open: a bug can panic the
+machine. A DEBUG kernel (or `set kmem_flags=0xf` in /etc/system) catches memory misuse early.
 
 ## 3. Collect after each test
     dmesg | grep -i iwm
@@ -47,11 +48,28 @@ returns to passive attach. Keep a console open: a bug can panic the machine.
 
 ## 6. Host tests (no illumos needed)
     docs/tests/run.sh
-Checks that both packaged firmware images pass `iwm_fw_parse` and that the rate ladder and
-rate encoding produce the expected tables. Run after any change to if_iwmfw.c or the rate code.
+Checks that both packaged firmware images walk cleanly and advertise DQA and UMAC scan,
+runs the MiRA/AMRR rate-control unit tests (docs/tests/ra.c, built from the driver
+sources), type-checks the kernel sources against the tree headers, and checks that
+if_iwm_proto.h matches if_iwm.c (regenerate with docs/tests/genproto.py).
 
 ## 7. Checks for the 2026-11-14 changes
 - Power off the AP while connected: expect "iwm AP lost" within a few seconds and link down.
 - After any firmware error, `dladm connect-wifi` again: expect "iwm runtime error=...; restarting"
   and a working connection, not a permanently failed driver.
 - `man iwm` renders; `mandoc -Tlint usr/src/man/man4d/iwm.4d` is clean.
+
+## 8. Checks for the OpenBSD re-port (2026-11-24)
+Sections 4, 5 and 7 described the previous driver; their log messages no longer exist.
+Run in this order and stop at the first failure (send dmesg and the step number):
+1. `modload`/attach: dmesg shows "hw rev 0x..., fw ver 36.ca7b901d.0, address ..."
+   (logged with `!`, so check /var/adm/messages). `dladm show-phys` lists iwm0.
+2. `dladm scan-wifi iwm0` lists 2.4 GHz and (if the card allows) 5 GHz networks.
+3. Open AP: `dladm connect-wifi -e <essid> iwm0`, then DHCP; ping for 5 minutes.
+4. WPA2-PSK AP: connect, DHCP, `iperf3 -c` both directions on 2.4 GHz HT20 and, if
+   available, 5 GHz HT40. Expect tens of Mbit/s; MCS climbs within seconds.
+5. Unplug/power off the AP: link goes down; power it back on and reconnect.
+6. `ifconfig iwm0 unplumb` / plumb x20, `modunload -i <id>`, then `::findleaks`.
+7. Suspend/resume if the machine supports it.
+8. Any "fatal firmware error": the driver dumps the error log to /var/adm/messages
+   (lines with "| "); send them. The device should restart and reconnect by itself.

@@ -1022,8 +1022,14 @@ ieee80211_parse_htinfo(struct ieee80211_node *in, const uint8_t *ie)
 		}
 		/* NB: caller responsible for forcing any channel change */
 	}
-	/* update node's tx channel width */
-	in->in_chw = IEEE80211_IS_CHAN_HT40(in->in_chan)? 40 : 20;
+	/*
+	 * Update node's tx channel width.  Use 40 MHz only if the AP allows
+	 * it in this HT info element: drivers with one channel table entry
+	 * per channel number (iwm) mark the entry HT40U and HT40D at once,
+	 * so the channel flags alone do not say what the BSS uses.
+	 */
+	in->in_chw = ((htflags & IEEE80211_CHAN_HT40) &&
+	    IEEE80211_IS_CHAN_HT40(in->in_chan)) ? 40 : 20;
 }
 
 /*

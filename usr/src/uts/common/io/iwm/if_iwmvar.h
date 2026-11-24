@@ -103,312 +103,559 @@
  * ACTION OF CONTRACT, NEGLIGENCE OR OTHER TORTIOUS ACTION, ARISING OUT OF
  * OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
  */
-
 /* END CSTYLED */
 
 /*
  * Copyright 2026 lex0de <lex0de@tuta.com>
- * Preserve the original donor licence notices above verbatim.
+ *
+ * illumos port of OpenBSD's if_iwmvar.h.  Field names follow OpenBSD so
+ * that code can be compared line by line.  Differences:
+ *  - bus_dma maps and mbufs are replaced by illumos DDI DMA handles and
+ *    driver-owned copy buffers (struct iwm_dma_info, iwm_tx_data, iwm_rx_data);
+ *  - OpenBSD tasks and timeouts are illumos taskq dispatches and
+ *    timeout(9F)/ddi_periodic(9F);
+ *  - the 9000-family multi-queue RX path, MSI-X, radiotap and bgscan are
+ *    not carried (no illumos counterpart or not in scope).
  */
 
-/*
- * Derived from OpenBSD sys/dev/pci/if_iwmvar.h at
- * 0efabb066d34187a404f31d303b3b97103df1117, BSD licence option.
- * The ring shape and 8000-family limits are retained.  OS-owned resources
- * use illumos types.  TX aggregation is limited to TID0; no RX reorder,
- * radiotap or other device families.
- */
 #ifndef _IF_IWMVAR_H
 #define	_IF_IWMVAR_H
 
+#include <sys/types.h>
 #include <sys/ddi.h>
 #include <sys/sunddi.h>
-#include <sys/net80211.h>
-#include <sys/mac_wifi.h>
 #include <sys/taskq.h>
+#include <sys/ksynch.h>
+#include <sys/mac_provider.h>
+#include <sys/mac_wifi.h>
+#include <sys/net80211.h>
+#include <sys/net80211_ht.h>
+#include <io/iwm/if_iwmcompat.h>
 #include <io/iwm/if_iwmreg.h>
-#include <io/iwm/if_iwmfw.h>
+#include <io/iwm/if_iwm_ra.h>
 
 #ifdef __cplusplus
 extern "C" {
 #endif
 
-#define	IWM_TX_RING_COUNT	256
-#define	IWM_ASSOC_TX_RINGS	5
-#define	IWM_TX_AGG_QUEUE	10
-#define	IWM_TX_AGG_WINDOW	64
-#define	IWM_RX_RING_COUNT	256
-#define	IWM_RBUF_SIZE		4096
-#define	IWM_FWDMASEGSZ_8000	(320 * 1024)
-#define	IWM_DEVICE_FAMILY_8000	2
 #define	IWM_UCODE_SECT_MAX	16
+#define	IWM_FWDMASEGSZ		(192 * 1024)
+#define	IWM_FWDMASEGSZ_8000	(320 * 1024)
+/* sanity check value */
+#define	IWM_FWMAXSIZE		(2 * 1024 * 1024)
 
-/* Explicit handle/memory/binding ownership; stop DMA before releasing. */
+#define	IWM_FW_STATUS_NONE		0
+#define	IWM_FW_STATUS_INPROGRESS	1
+#define	IWM_FW_STATUS_DONE		2
+
+enum iwm_ucode_type {
+	IWM_UCODE_TYPE_REGULAR,
+	IWM_UCODE_TYPE_INIT,
+	IWM_UCODE_TYPE_WOW,
+	IWM_UCODE_TYPE_REGULAR_USNIFFER,
+	IWM_UCODE_TYPE_MAX
+};
+
+struct iwm_fw_info {
+	void *fw_rawdata;
+	size_t fw_rawsize;
+	int fw_status;
+
+	struct iwm_fw_sects {
+		struct iwm_fw_onesect {
+			void *fws_data;
+			uint32_t fws_len;
+			uint32_t fws_devoff;
+		} fw_sect[IWM_UCODE_SECT_MAX];
+		size_t fw_totlen;
+		int fw_count;
+		uint32_t paging_mem_size;
+	} fw_sects[IWM_UCODE_TYPE_MAX];
+};
+
+struct iwm_nvm_data {
+	int n_hw_addrs;
+	uint8_t hw_addr[ETHER_ADDR_LEN];
+
+	uint8_t calib_version;
+	uint16_t calib_voltage;
+
+	uint16_t raw_temperature;
+	uint16_t kelvin_temperature;
+	uint16_t kelvin_voltage;
+	uint16_t xtal_calib[2];
+
+	int sku_cap_band_24GHz_enable;
+	int sku_cap_band_52GHz_enable;
+	int sku_cap_11n_enable;
+	int sku_cap_11ac_enable;
+	int sku_cap_amt_enable;
+	int sku_cap_ipan_enable;
+	int sku_cap_mimo_disable;
+
+	uint8_t radio_cfg_type;
+	uint8_t radio_cfg_step;
+	uint8_t radio_cfg_dash;
+	uint8_t radio_cfg_pnum;
+	uint8_t valid_tx_ant, valid_rx_ant;
+
+	uint16_t nvm_version;
+	uint8_t max_tx_pwr_half_dbm;
+
+	int lar_enabled;
+};
+
+/* max bufs per tfd the driver will use */
+#define	IWM_MAX_CMD_TBS_PER_TFD	2
+
+struct iwm_host_cmd {
+	const void *data[IWM_MAX_CMD_TBS_PER_TFD];
+	struct iwm_rx_packet *resp_pkt;
+	size_t resp_pkt_len;
+	int handler_status;
+
+	uint32_t flags;
+	uint16_t len[IWM_MAX_CMD_TBS_PER_TFD];
+	uint8_t dataflags[IWM_MAX_CMD_TBS_PER_TFD];
+	uint32_t id;
+};
+
+/* One physically contiguous, consistent DMA allocation. */
 struct iwm_dma_info {
 	ddi_dma_handle_t	dma_hdl;
 	ddi_acc_handle_t	acc_hdl;
 	ddi_dma_cookie_t	cookie;
-	caddr_t		vaddr;
-	size_t		length;
-	size_t		size;
-	boolean_t	allocated;
-	boolean_t	memory;
-	boolean_t	bound;
+	uint_t			ncookies;
+	bus_addr_t		paddr;
+	void			*vaddr;
+	size_t			size;
+	size_t			length;
 };
 
-/* Each streaming mapping holds a data-block reference until unbound. */
-struct iwm_tx_mapping {
-	ddi_dma_handle_t		handle;
-	mblk_t			*mp;
-	boolean_t		bound;
+struct iwm_fw_paging {
+	struct iwm_dma_info fw_paging_block;
+	uint32_t fw_paging_size;
 };
+
+#define	IWM_TX_RING_COUNT	256
+#define	IWM_TX_RING_LOMARK	192
+#define	IWM_TX_RING_HIMARK	224
+
+/* For aggregation queues, index must be aligned to frame sequence number. */
+#define	IWM_AGG_SSN_TO_TXQ_IDX(x)	((x) & (IWM_TX_RING_COUNT - 1))
+
+/*
+ * Frame payloads are copied into per-slot buffers.  Frames from illumos
+ * net80211 are at most IEEE80211_MTU plus 802.11/LLC/CCMP overhead, well
+ * under 2 KB; two slots share each page so no slot crosses a page.
+ */
+#define	IWM_TXBUF_SIZE		2048
+#define	IWM_TXBUF_PER_PAGE	2
 
 struct iwm_tx_data {
-	struct iwm_dma_info	dma;
-	struct iwm_tx_mapping	maps[IWM_NUM_OF_TBS - 2];
-	uint_t			mapped;
-	mblk_t			*mp;
-	struct ieee80211_node	*ni;
-	boolean_t		owned;
-	boolean_t		completed;
-	uint_t			generation;
-	uint64_t		ba_generation;
-	uint16_t		sequence;
-	boolean_t		transmitted;
-	boolean_t		acknowledged;
-	boolean_t		table_rate;
-	clock_t			expires;
-	uint32_t		status;
+	bus_addr_t	cmd_paddr;
+	bus_addr_t	scratch_paddr;
+	caddr_t		buf;		/* payload copy buffer */
+	bus_addr_t	buf_paddr;
+	int		buf_page;	/* index into ring->buf_dma[] */
+	mblk_t		*m;		/* non-NULL while slot is in use */
+	struct iwm_node *in;
+	int txmcs;
+	int txrate;
+
+	/* A-MPDU subframes */
+	int ampdu_txmcs;
+	int ampdu_txnss;
+	int ampdu_nframes;
 };
 
 struct iwm_tx_ring {
 	struct iwm_dma_info	desc_dma;
 	struct iwm_dma_info	cmd_dma;
+	struct iwm_dma_info	*buf_dma;	/* payload pages, or NULL */
+	size_t			buf_npages;
 	struct iwm_tfd		*desc;
 	struct iwm_device_cmd	*cmd;
 	struct iwm_tx_data	data[IWM_TX_RING_COUNT];
-	uint_t			qid;
-	boolean_t		configured;
-	boolean_t		released;
-	uint8_t			station;
-	uint8_t			fifo;
-	uint_t			queued;
-	uint_t			cur;
-	uint_t			tail;
+	int			qid;
+	int			queued;
+	int			cur;
+	int			tail;
+};
+
+#define	IWM_RX_RING_COUNT	256
+/* Linux driver optionally uses 8k buffer */
+#define	IWM_RBUF_SIZE		4096
+
+struct iwm_rx_data {
+	struct iwm_dma_info	dma;
 };
 
 struct iwm_rx_ring {
-	struct iwm_dma_info	desc_dma;
+	struct iwm_dma_info	free_desc_dma;
 	struct iwm_dma_info	stat_dma;
 	uint32_t		*desc;
 	struct iwm_rb_status	*stat;
-	struct iwm_dma_info	data[IWM_RX_RING_COUNT];
-	uint_t			cur;
+	struct iwm_rx_data	data[IWM_RX_RING_COUNT];
+	int			cur;
 };
 
-struct iwm_cfg {
-	uint16_t	vendor;
-	uint16_t	device;
-	uint16_t	subvendor;
-	uint16_t	subdevice;
-	uint8_t		revision;
-	uint_t		family;
-	size_t		fw_dma_size;
-	size_t		nvm_section_size;
-	boolean_t	nvm_external;
-	const char	*fwname;
+#define	IWM_FLAG_USE_ICT	0x01	/* using Interrupt Cause Table */
+#define	IWM_FLAG_RFKILL		0x02	/* radio kill switch is set */
+#define	IWM_FLAG_SCANNING	0x04	/* scan in progress */
+#define	IWM_FLAG_MAC_ACTIVE	0x08	/* MAC context added to firmware */
+#define	IWM_FLAG_BINDING_ACTIVE	0x10	/* MAC->PHY binding added to firmware */
+#define	IWM_FLAG_STA_ACTIVE	0x20	/* AP added to firmware station table */
+#define	IWM_FLAG_TE_ACTIVE	0x40	/* time event is scheduled */
+#define	IWM_FLAG_HW_ERR		0x80	/* hardware error occurred */
+#define	IWM_FLAG_SHUTDOWN	0x100	/* shutting down; new tasks forbidden */
+#define	IWM_FLAG_BGSCAN		0x200	/* background scan in progress */
+#define	IWM_FLAG_TXFLUSH	0x400	/* Tx queue flushing in progress */
+/* illumos additions */
+#define	IWM_FLAG_RUNNING	0x1000	/* device initialised (IFF_RUNNING) */
+#define	IWM_FLAG_SUSPENDED	0x2000	/* DDI_SUSPEND */
+#define	IWM_FLAG_OACTIVE	0x4000	/* Tx blocked; call mac_tx_update */
+#define	IWM_FLAG_UP		0x8000	/* mac_start() called (IFF_UP) */
+#define	IWM_FLAG_NET_ATTACHED	0x10000	/* ieee80211_attach() done */
+
+struct iwm_ucode_status {
+	uint32_t uc_error_event_table;
+	uint32_t uc_umac_error_event_table;
+	uint32_t uc_log_event_table;
+
+	int uc_ok;
+	int uc_intr;
 };
 
-#define	IWM_SILICON_C_STEP	2
-#define	IWM_PASSIVE_DMA_COUNT	4
+#define	IWM_CMD_RESP_MAX	PAGESIZE
 
-/* Immutable after the bounded attach-time NVM bootstrap. */
-struct iwm_identity {
-	boolean_t valid;
-	uint8_t mac[6];
-	uint16_t nvm_version;
-	uint32_t radio_cfg;
-	uint32_t sku;
-	uint8_t tx_ant;
-	uint8_t rx_ant;
-	uint16_t channels[51];
-	uint16_t lar;
+/* lower blocks contain EEPROM image and calibration data */
+#define	IWM_OTP_LOW_IMAGE_SIZE_FAMILY_7000	16384
+#define	IWM_OTP_LOW_IMAGE_SIZE_FAMILY_8000	32768
+
+#define	IWM_TE_SESSION_PROTECTION_MAX_TIME_MS	1000
+#define	IWM_TE_SESSION_PROTECTION_MIN_TIME_MS	400
+
+enum IWM_CMD_MODE {
+	IWM_CMD_ASYNC		= (1 << 0),
+	IWM_CMD_WANT_RESP	= (1 << 1),
+	IWM_CMD_SEND_IN_RFKILL	= (1 << 2),
+};
+enum iwm_hcmd_dataflag {
+	IWM_HCMD_DFL_NOCOPY	= (1 << 0),
+	IWM_HCMD_DFL_DUP	= (1 << 1),
 };
 
-enum iwm_operation {
-	IWM_OP_NONE, IWM_OP_START, IWM_OP_SCAN, IWM_OP_STOP,
-	IWM_OP_DETACH, IWM_OP_READ, IWM_OP_CONNECT, IWM_OP_DISCONNECT,
-	IWM_OP_SELECT
+#define	IWM_NUM_PAPD_CH_GROUPS	9
+#define	IWM_NUM_TXP_CH_GROUPS	9
+
+struct iwm_phy_db_entry {
+	uint16_t size;
+	uint8_t *data;
 };
 
-enum iwm_runtime_owner {
-	IWM_RUNTIME_PROVIDER = 0x01,
-	IWM_RUNTIME_CONNECT = 0x02
+struct iwm_phy_db {
+	struct iwm_phy_db_entry	cfg;
+	struct iwm_phy_db_entry	calib_nch;
+	struct iwm_phy_db_entry	calib_ch_group_papd[IWM_NUM_PAPD_CH_GROUPS];
+	struct iwm_phy_db_entry	calib_ch_group_txp[IWM_NUM_TXP_CH_GROUPS];
 };
 
-/* Persistent worker/selector state; transport belongs to the runtime. */
-#define	IWM_CONFIG_CHANNEL	0x01
-#define	IWM_CONFIG_AUTH		0x02
-#define	IWM_CONFIG_BSSTYPE	0x04
-#define	IWM_CONFIG_ESSID	0x08
-#define	IWM_CONFIG_OPEN		0x10
-#define	IWM_CONFIG_COMMON	(IWM_CONFIG_CHANNEL | IWM_CONFIG_AUTH | \
-	IWM_CONFIG_BSSTYPE | IWM_CONFIG_ESSID)
-
-/* sc->lock protects snapshots; only the connection worker applies them. */
-struct iwm_wme_state {
-	struct iwm_ac_qos ac[4];
-	uint64_t epoch;
-	uint64_t requested;
-	uint64_t applied;
-	boolean_t accepting;
-	boolean_t valid;
-	int error;
+struct iwm_phy_ctxt {
+	uint16_t id;
+	uint16_t color;
+	uint32_t ref;
+	struct ieee80211_channel *channel;
+	uint8_t sco;		/* 40 MHz secondary channel offset */
+	uint8_t vht_chan_width;
 };
 
-struct iwm_connection {
-	taskq_t *taskq;
-	kcondvar_t cv;
-	/* Key properties and retirement: crypto_lock -> ic_genlock -> lock. */
-	kmutex_t crypto_lock;
-	kthread_t *thread;
-	ieee80211_node_t *node;
-	boolean_t pending;
-	boolean_t operation_owned;
-	boolean_t reassociating;
-	clock_t deadline;
-	boolean_t finished;
-	boolean_t cancel;
-	boolean_t running;
-	boolean_t link_up;
-	boolean_t tx_admission;
-	boolean_t rx_admission;
-	/* Native WPA configuration enabled; ic_flags owns crypto semantics. */
-	boolean_t wpa;
-	boolean_t mlme_cancel;
-	boolean_t clear_ie;
-	boolean_t disable_wpa;
-	boolean_t resetting;
-	uint8_t essid[IEEE80211_NWID_LEN];
-	uint_t esslen;
-	uint_t channel;
-	uint16_t basic_rates;
-	uint_t configuration;
-	struct iwm_wme_state wme;
-	int error;
-	int cleanup_error;
-	int (*newstate)(ieee80211com_t *, enum ieee80211_state, int);
-	void (*recv_action)(ieee80211_node_t *, const uint8_t *,
-	    const uint8_t *);
-	int (*send_action)(ieee80211_node_t *, int, int, uint16_t[4]);
+/* OpenBSD's HTOP0 secondary channel offset values, used by phy_ctxt. */
+#define	IWM_HTOP0_SCO_SCN	0
+#define	IWM_HTOP0_SCO_SCA	1
+#define	IWM_HTOP0_SCO_SCB	3
+
+struct iwm_bf_data {
+	int bf_enabled;		/* filtering	*/
+	int ba_enabled;		/* abort	*/
+	int ave_beacon_signal;
+	int last_cqm_event;
+};
+
+struct iwm_rxq_dup_data {
+	uint16_t last_seq[IWM_MAX_TID_COUNT + 1];
+	uint8_t last_sub_frame[IWM_MAX_TID_COUNT + 1];
+};
+
+struct iwm_ba_task_data {
+	uint32_t		start_tidmask;
+	uint32_t		stop_tidmask;
+};
+
+/* Per-TID Rx BlockAck state the firmware needs (from ADDBA requests). */
+struct iwm_rx_ba {
+	uint16_t		ssn;
+	uint16_t		winsize;
+	uint16_t		timeout;
 };
 
 struct iwm_softc {
-	dev_info_t		*dip;
-	const struct iwm_cfg	*cfg;
-	ieee80211com_t		ic;
-	struct iwm_identity	identity;
-	struct iwm_connection	connection;
-	wifi_data_t		wifi;
-	kmutex_t		operation_lock;
-	kcondvar_t		operation_cv;
-	enum iwm_operation	operation;
-	boolean_t		operation_initialized;
-	boolean_t		public_enabled;
-	boolean_t		net_attached;
-	boolean_t		mac_registered;
-	boolean_t		minor_created;
-	boolean_t		runtime_started;
-	uint_t			runtime_owners;
-	boolean_t		desired_bssid_valid;
-	boolean_t		associated_bssid_valid;
-	uint8_t			desired_bssid[IEEE80211_ADDR_LEN];
-	uint8_t			associated_bssid[IEEE80211_ADDR_LEN];
-	boolean_t		stop_requested;
-	boolean_t		detach_requested;
-	uint_t			generation;
-	uint_t			scan_generation;
-	uint32_t		xmit_rejected;
-	uint32_t		state_rejected;
-	uint32_t		tx_rejected;
-	uint32_t		multicast_calls;
-	int			runtime_stop_error;
-	ddi_acc_handle_t		pcih;
-	ddi_acc_handle_t		regh;
-	caddr_t			regs;
-	off_t			regsize;
-	ddi_intr_handle_t	intr;
-	uint_t			intr_pri;
-	int			intr_types;
-	int			intr_cap;
-	boolean_t		intr_allocated;
-	boolean_t		intr_added;
-	boolean_t		intr_enabled;
-	boolean_t		lock_initialized;
-	boolean_t		csr_valid;
-	boolean_t		attached;
-	boolean_t		intr_fault;
-	uint32_t		intr_calls;
-	uint32_t		hw_rev;
-	uint32_t		gp_cntrl;
-	uint16_t		pci_command;
-	uint16_t		pcie_cap;
-	uint16_t		msi_cap;
-	uint16_t		pm_cap;
-	int			fail_step;
-	int			attach_step;
-	kmutex_t		lock;
-	struct iwm_dma_info	dma[IWM_PASSIVE_DMA_COUNT];
-	struct iwm_fw_info	fw;
-	struct iwm_runtime	*run;
+	/* ic must be first: net80211 callbacks cast ic back to the softc. */
+	struct ieee80211com sc_ic;
+	dev_info_t	*sc_dip;
+	int (*sc_newstate)(struct ieee80211com *, enum ieee80211_state, int);
+	/* net80211 defaults we chain to from our BlockAck hooks */
+	void (*sc_recv_action)(struct ieee80211_node *, const uint8_t *,
+	    const uint8_t *);
+	int (*sc_addba_response)(struct ieee80211_node *,
+	    struct ieee80211_tx_ampdu *, int, int, int);
+	void (*sc_addba_stop)(struct ieee80211_node *,
+	    struct ieee80211_tx_ampdu *);
+	int sc_newstate_pending;
+	int attached;
+
+	struct iwm_amrr sc_amrr;
+	timeout_id_t sc_calib_to;
+	timeout_id_t sc_led_blink_to;
+	ddi_periodic_t sc_watchdog;
+
+	/*
+	 * Deferred work.  OpenBSD runs init_task on systq and the others on
+	 * its single-threaded sc_nswq; illumos uses two single-threaded taskqs
+	 * with the same split.  sc_task_refs counts dispatched tasks so stop
+	 * and detach can wait for them (OpenBSD refcnt task_refs).
+	 */
+	taskq_t		*sc_initq;
+	taskq_t		*sc_nswq;
+	uint_t		sc_task_refs;
+	kcondvar_t	sc_task_cv;
+	uint32_t	sc_task_pending;	/* IWM_TASK_* bits queued */
+#define	IWM_TASK_INIT		0x01
+#define	IWM_TASK_NEWSTATE	0x02
+#define	IWM_TASK_BA		0x04
+#define	IWM_TASK_MAC_CTXT	0x08
+#define	IWM_TASK_DEFER		0x10
+	enum ieee80211_state	ns_nstate;
+	int			ns_arg;
+
+	int			deauth_sent;
+
+	/* Arguments for the firmware BlockAck setup/teardown task. */
+	struct iwm_ba_task_data	ba_rx;
+	struct iwm_ba_task_data	ba_tx;
+	struct iwm_rx_ba	sc_rx_ba[IWM_MAX_TID_COUNT];
+
+	/* Register access. */
+	ddi_acc_handle_t	sc_pcih;
+	ddi_acc_handle_t	sc_regh;
+	caddr_t			sc_regs;
+	off_t			sc_sz;
+
+	/* Interrupts. */
+	ddi_intr_handle_t	sc_intr_htable[1];
+	int			sc_intr_type;
+	int			sc_intr_cap;
+	uint_t			sc_intr_pri;
+	int			sc_msix;
+
+	/*
+	 * sc_mtx protects the device, rings and driver state and is taken by
+	 * the interrupt handler.  sc_rwlock serialises init/stop/newstate and
+	 * ioctls (OpenBSD ioctl_rwl).
+	 */
+	kmutex_t		sc_mtx;
+	krwlock_t		sc_rwlock;
+	kcondvar_t		sc_cmd_cv;	/* command responses */
+	kcondvar_t		sc_fw_cv;	/* firmware upload/alive/init */
+	kcondvar_t		sc_txq_cv;	/* Tx queue drain */
+
+	/* TX scheduler rings. */
+	struct iwm_dma_info		sched_dma;
+	uint32_t			sched_base;
+
+	/* TX/RX rings. */
+	struct iwm_tx_ring txq[IWM_MAX_QUEUES];
+	struct iwm_rx_ring rxq;
+	int qfullmsk;
+	int qenablemsk;
+	int cmdqid;
+
+	int sc_sf_state;
+
+	/* ICT table. */
+	struct iwm_dma_info	ict_dma;
+	int			ict_cur;
+
+	int sc_hw_rev;
+#define	IWM_SILICON_A_STEP	0
+#define	IWM_SILICON_B_STEP	1
+#define	IWM_SILICON_C_STEP	2
+#define	IWM_SILICON_D_STEP	3
+	int sc_hw_id;
+	int sc_device_family;
+#define	IWM_DEVICE_FAMILY_7000	1
+#define	IWM_DEVICE_FAMILY_8000	2
+#define	IWM_DEVICE_FAMILY_9000	3
+
+	struct iwm_dma_info kw_dma;
+	struct iwm_dma_info fw_dma;
+
+	int sc_fw_chunk_done;
+	int sc_init_complete;
+#define	IWM_INIT_COMPLETE	0x01
+#define	IWM_CALIB_COMPLETE	0x02
+
+	struct iwm_ucode_status sc_uc;
+	enum iwm_ucode_type sc_uc_current;
+	char sc_fwver[32];
+
+	int sc_capaflags;
+	int sc_capa_max_probe_len;
+	int sc_capa_n_scan_channels;
+	uint8_t sc_ucode_api[howmany(IWM_NUM_UCODE_TLV_API, NBBY)];
+	uint8_t sc_enabled_capa[howmany(IWM_NUM_UCODE_TLV_CAPA, NBBY)];
+#define	IWM_MAX_FW_CMD_VERSIONS	64
+	struct iwm_fw_cmd_version cmd_versions[IWM_MAX_FW_CMD_VERSIONS];
+	int n_cmd_versions;
+
+	int sc_intmask;
+	int sc_flags;
+
+	uint32_t sc_fh_init_mask;
+	uint32_t sc_hw_init_mask;
+	uint32_t sc_fh_mask;
+	uint32_t sc_hw_mask;
+
+	int sc_generation;
+
+	int sc_cap_off;		/* PCIe caps */
+
+	const char *sc_fwname;
+	size_t sc_fwdmasegsz;
+	size_t sc_nvm_max_section_size;
+	struct iwm_fw_info sc_fw;
+	uint32_t sc_fw_phy_config;
+	uint32_t sc_extra_phy_config;
+	struct iwm_tlv_calib_ctrl sc_default_calib[IWM_UCODE_TYPE_MAX];
+
+	struct iwm_nvm_data sc_nvm;
+	struct iwm_phy_db sc_phy_db;
+
+	struct iwm_bf_data sc_bf;
+
+	int sc_tx_timer[IWM_MAX_QUEUES];
+	int sc_rx_ba_sessions;
+	int tx_ba_queue_mask;
+
+	int sc_scan_last_antenna;
+
+	int sc_fixed_ridx;
+
+	int sc_staid;
+	int sc_nodecolor;
+
+	uint8_t *sc_cmd_resp_pkt[IWM_TX_RING_COUNT];
+	uint8_t sc_cmd_done[IWM_TX_RING_COUNT];	/* illumos: response seen */
+	size_t sc_cmd_resp_len[IWM_TX_RING_COUNT];
+	int sc_nic_locks;
+
+	struct iwm_rx_phy_info sc_last_phy_info;
+	int sc_ampdu_ref;
+
+	uint32_t sc_time_event_uid;
+
+	/* phy contexts.  we only use the first one */
+	struct iwm_phy_ctxt sc_phyctxt[IWM_NUM_PHY_CTX];
+
+	struct iwm_notif_statistics sc_stats;
+	int sc_noise;
+
+	int host_interrupt_operation_mode;
+	int sc_ltr_enabled;
+	enum iwm_nvm_type nvm_type;
+
+	int sc_mqrx_supported;
+	int sc_integrated;
+	int sc_ltr_delay;
+	int sc_xtal_latency;
+	int sc_low_latency_xtal;
+
+	/*
+	 * Paging parameters - All of the parameters should be set by the
+	 * opmode when paging is enabled
+	 */
+	struct iwm_fw_paging fw_paging_db[IWM_NUM_OF_FW_PAGING_BLOCKS];
+	uint16_t num_of_paging_blk;
+	uint16_t num_of_pages_in_last_blk;
+
+	/* illumos: received frames handed to net80211 after sc_mtx drops. */
+	mblk_t		*sc_rx_head;
+	mblk_t		*sc_rx_tail;
+	/* illumos: work the interrupt handler does after dropping sc_mtx */
+	int		sc_tx_update;		/* call mac_tx_update() */
+	int		sc_bmiss_pending;	/* ieee80211_beacon_miss() */
+	int		sc_endscan_pending;	/* call ieee80211_end_scan() */
+	uint32_t	sc_bar_pending;		/* TIDs needing a BAR */
+	uint16_t	sc_bar_ssn[IWM_MAX_TID_COUNT];
+	/* Tx BlockAck window start per TID (OpenBSD ni_tx_ba ba_winstart) */
+	uint16_t	sc_tx_ba_winstart[IWM_MAX_TID_COUNT];
+
+	/* illumos: interface statistics (MAC_STAT_*) */
+	uint64_t	sc_ipackets, sc_opackets, sc_rbytes, sc_obytes;
+	uint64_t	sc_ierrors, sc_oerrors, sc_noxmtbuf;
+
+	/* illumos: firmware error recovery accounting */
+	uint32_t	sc_fw_restarts;
 };
 
-/*
- * Attach/detach own resources in thread context. The lock serializes firmware
- * state, completion predicates and register windows with the MSI handler.
- * Bounded CV waits release it; allocations and host interrupt operations run
- * outside it. Stop device DMA before releasing published mappings, then
- * disable/remove the handler before destroying its lock or BAR.
- */
-int iwm_pci_map(struct iwm_softc *);
-void iwm_pci_unmap(struct iwm_softc *);
-int iwm_reg_read(struct iwm_softc *, uint_t, uint32_t *);
-int iwm_reg_write(struct iwm_softc *, uint_t, uint32_t);
-int iwm_dma_alloc(struct iwm_softc *, struct iwm_dma_info *, size_t,
-    uint_t, uint_t);
-int iwm_dma_free(struct iwm_dma_info *);
-int iwm_fw_read(struct iwm_softc *);
-int iwm_checkpoint(struct iwm_softc *, const char *);
-int iwm_intr_disable(struct iwm_softc *);
-int iwm_init_nvm(struct iwm_softc *);
-int iwm_base_dma_alloc(struct iwm_softc *);
-int iwm_preinit(struct iwm_softc *);
-int iwm_runtime_start(struct iwm_softc *);
-int iwm_runtime_status(struct iwm_softc *);
-int iwm_operation_enter(struct iwm_softc *, enum iwm_operation);
-void iwm_operation_exit(struct iwm_softc *);
-int iwm_runtime_acquire(struct iwm_softc *, enum iwm_runtime_owner);
-int iwm_runtime_release(struct iwm_softc *, enum iwm_runtime_owner);
-void iwm_connection_task(void *);
-void iwm_connection_cancel(struct iwm_softc *);
-int iwm_connection_disconnect(struct iwm_softc *);
-mblk_t *iwm_connection_tx(struct iwm_softc *, mblk_t *);
-int iwm_rsn_check(const uint8_t *, size_t);
-void iwm_connection_keys_clear(struct iwm_softc *);
-void iwm_connection_config_clear(struct iwm_softc *);
-int iwm_runtime_stop(struct iwm_softc *);
-int iwm_public_scan(struct iwm_softc *);
-uint64_t iwm_link_speed(struct iwm_softc *);
-int iwm_select_bss(struct iwm_softc *, const uint8_t *, size_t, uint_t,
-    ieee80211_node_t **);
-int iwm_lar_prepare(struct iwm_softc *, uint_t);
-void iwm_scan_stop_request(struct iwm_softc *);
-int iwm_scan_attach(struct iwm_softc *);
-int iwm_scan_detach(struct iwm_softc *);
-int iwm_run_free(struct iwm_softc *);
-int iwm_run_quiesce(struct iwm_softc *);
-uint_t iwm_active_intr(struct iwm_softc *, uint32_t, uint32_t);
-void iwm_fw_free(struct iwm_fw_info *);
+struct iwm_node {
+	struct ieee80211_node in_ni;
+	struct iwm_phy_ctxt *in_phyctxt;
+	uint8_t in_macaddr[ETHER_ADDR_LEN];
+
+	uint16_t in_id;
+	uint16_t in_color;
+
+	struct iwm_amrr_node in_amn;
+	struct iwm_ra_node in_rn;
+	int in_txmcs;		/* OpenBSD ni_txmcs */
+	int lq_rate_mismatch;
+
+	struct iwm_rxq_dup_data dup_data;
+
+	/* For use with the ADD_STA command. */
+	uint32_t tfd_queue_msk;
+	uint16_t tid_disable_ampdu;
+};
+/* One time unit in microseconds (OpenBSD IEEE80211_DUR_TU). */
+#define	IWM_DUR_TU		1024
+
+/* 12-bit sequence number comparison (OpenBSD SEQ_LT). */
+#define	IWM_SEQ_LT(a, b)	\
+	((((uint16_t)(a) - (uint16_t)(b)) & 0xfff) > 2048)
+
+#define	IWM_STATION_ID		0
+#define	IWM_AUX_STA_ID		1
+#define	IWM_MONITOR_STA_ID	2
+
+#define	IWM_ICT_SIZE		4096
+#define	IWM_ICT_COUNT		(IWM_ICT_SIZE / sizeof (uint32_t))
+#define	IWM_ICT_PADDR_SHIFT	12
+
+/* Register access (OpenBSD IWM_READ etc., which use bus_space). */
+#define	IWM_READ(sc, reg)						\
+	ddi_get32((sc)->sc_regh, (uint32_t *)((sc)->sc_regs + (reg)))
+#define	IWM_WRITE(sc, reg, val)						\
+	ddi_put32((sc)->sc_regh, (uint32_t *)((sc)->sc_regs + (reg)), (val))
+#define	IWM_WRITE_1(sc, reg, val)					\
+	ddi_put8((sc)->sc_regh, (uint8_t *)((sc)->sc_regs + (reg)), (val))
+#define	IWM_SETBITS(sc, reg, mask)					\
+	IWM_WRITE(sc, reg, IWM_READ(sc, reg) | (mask))
+#define	IWM_CLRBITS(sc, reg, mask)					\
+	IWM_WRITE(sc, reg, IWM_READ(sc, reg) & ~(mask))
+/* ddi_get/put on strict-order device mappings are already ordered. */
+#define	IWM_BARRIER_WRITE(sc)		((void)0)
+#define	IWM_BARRIER_READ_WRITE(sc)	((void)0)
 
 #ifdef __cplusplus
 }
