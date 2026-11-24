@@ -15,6 +15,8 @@
 # Run as root on the machine with the card:
 #
 #	docs/tests/hwtest.sh            run everything (stops at first failure)
+#	docs/tests/hwtest.sh build      build, check, install and modload only
+#	                                (no card needed; fine in a plain VM)
 #	docs/tests/hwtest.sh restore    put the original modules back
 #
 # Settings: docs/tests/hwtest.conf (copy hwtest.conf.example).
@@ -48,7 +50,12 @@ restore() {
 	rm -f "$state"
 	echo "Reboot to load the original modules."
 }
-[ "${1:-}" = restore ] && { restore; exit 0; }
+mode=${1:-all}
+case $mode in
+restore) restore; exit 0 ;;
+all|build) ;;
+*) echo "usage: $0 [build|restore]"; exit 1 ;;
+esac
 
 OPEN_ESSID="" WPA_ESSID="" WPA_KEY="" PING_HOST="" IPERF_SERVER=""
 IPERF_SECONDS=30 SOAK_SECONDS=300 CYCLES=10 BUILD=1
@@ -125,12 +132,15 @@ waitfor() {
 	return 1
 }
 
-say "iwm hardware test $stamp, tree $(cd "$root" && git log --oneline -1 2>/dev/null)"
+say "iwm hardware test ($mode) $stamp, tree $(cd "$root" && git log --oneline -1 2>/dev/null)"
 
 # --- 0. preflight
 step=preflight
-prtconf -v 2>/dev/null | grep -qi 'pciex8086,24f[34d]' ||
-    fail "no Intel 8260/8265 (8086:24f3/24f4/24fd) found"
+if [ "$mode" = all ]; then
+	prtconf -v 2>/dev/null | grep -qi 'pciex8086,24f[34d]' ||
+	    fail "no Intel 8260/8265 (8086:24f3/24f4/24fd) found;" \
+	    "use '$0 build' on a machine without the card"
+fi
 if svcs -H -o state network/physical:nwam 2>/dev/null | grep -q online; then
 	say "warning: NWAM is online and may fight over the iwm link;" \
 	    "consider: svcadm disable network/physical:nwam"
@@ -140,7 +150,7 @@ for fw in iwm-8000C-36 iwm-8265-36; do
 	    cp "$uts/common/io/iwm/fw-iw/$fw" "$FWDIR/$fw" ||
 	    fail "cannot install firmware $fw"; }
 done
-pass "preflight (card present, firmware in $FWDIR)"
+pass "preflight (firmware in $FWDIR)"
 
 # --- 1. build
 step=build
@@ -185,6 +195,22 @@ fi
 cp "$newdrv" "$DRV" || fail "cannot install iwm"
 rm -f "$state"
 pass "install"
+
+# --- build mode: prove the module loads and all symbols resolve
+if [ "$mode" = build ]; then
+	step=modload
+	elfdump -s "$DRV" 2>/dev/null | awk '$5 == "UNDEF" || $8 == "UNDEF"' \
+	    > "$out/iwm-undef.txt"
+	modinfo | grep -qw iwm && run modunload -i \
+	    "$(modinfo | awk '$6 == "iwm" {print $1}')"
+	run modload "$DRV" || fail "modload iwm (unresolved symbols?" \
+	    "see messages.txt)"
+	modinfo | grep -w iwm | tee -a "$log"
+	modinfo | grep -qw iwm || fail "iwm not in modinfo after modload"
+	run modunload -i "$(modinfo | awk '$6 == "iwm" {print $1}')"
+	pass "modload/modunload (no device: attach not exercised)"
+	finish 0
+fi
 
 # --- 3. attach
 step=attach

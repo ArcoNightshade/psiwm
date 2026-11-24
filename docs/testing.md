@@ -60,6 +60,8 @@ if_iwm_proto.h matches if_iwm.c (regenerate with docs/tests/genproto.py).
 - `man iwm` renders; `mandoc -Tlint usr/src/man/man4d/iwm.4d` is clean.
 
 ## 8. Checks for the OpenBSD re-port (2026-11-24)
+Build only (no card, e.g. a plain VM): `docs/tests/hwtest.sh build` as root from a `bldenv`
+shell builds, runs `dmake check`, installs and modloads the modules.
 Automated: `cp docs/tests/hwtest.conf.example docs/tests/hwtest.conf`, fill in the networks,
 then as root (from a `bldenv` shell if it should build) run `docs/tests/hwtest.sh`. It runs
 the steps below, stops at the first failure and writes /var/tmp/iwm-hwtest-<time>.tar.gz to
