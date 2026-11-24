@@ -48,8 +48,21 @@ follows OpenBSD line for line, so upstream fixes can be carried over by diff.
   including the PHY DB section length.
 - Tx QoS frames use the queue of their access category (OpenBSD sends all on BE).
 
+- Rx BlockAck sessions are tracked per TID (`sc_rx_ba_tidmask`), not only counted.
+- Counted tasks clear their pending bit on entry so requests made while they run are kept.
+- Deferred end-of-scan runs only in SCAN state; leaving SCAN early aborts the firmware scan.
+- Data frames are dropped (not flow-controlled) on allocb failure or during a Tx flush;
+  `mac_tx_update()` is sent after stop and on entering RUN.
+- The newstate task does nothing while the device is down (RF-kill at plumb, or stopped).
+- Detach and attach failure tear the interrupt down before net80211 and the MAC handle.
+
 ## Upstream bugs found and fixed
 - `iwm_nvm_read_chunk()` forced the read offset to 0 (see audit notes).
+- Firmware TLV parse: signed API/capability index (out-of-bounds bit write on a bad
+  image), CMD_VERSIONS shrinking tlv_len and desynchronising the TLV walk, unknown
+  capability word ending the parse silently.
+- NVM: LAR word and channel-flag count not checked against the regulatory section size
+  (byte count compared with a channel count); PHY DB TXP group size not checked.
 - HT rate table (ieee80211.c): MCS 10 HT40 192 -> 162, MCS 28 HT40 324 -> 648,
   MCS 28 HT40 SGI 520 -> 720 (500 kbit/s units). MCS 10 affects 2x2 cards at 40 MHz.
 

@@ -8130,6 +8130,12 @@ iwm_newstate_task(void *psc)
 		/* iwm_stop() is waiting for us. */
 		goto done;
 	}
+	/*
+	 * Device down (RF-kill at m_start, or stopped after the request was
+	 * queued): firmware commands would only time out.
+	 */
+	if ((sc->sc_flags & IWM_FLAG_RUNNING) == 0)
+		goto done;
 
 	if (ostate == IEEE80211_S_SCAN) {
 		if (nstate == ostate) {
@@ -10030,11 +10036,12 @@ iwm_send(struct ieee80211com *ic, mblk_t *mp, uint8_t type)
 		mutex_enter(&sc->sc_mtx);
 		sc->sc_noxmtbuf++;
 		mutex_exit(&sc->sc_mtx);
-		if (!isdata) {
-			freemsg(mp);
-			return (ENOMEM);
-		}
-		return (EAGAIN);
+		/*
+		 * Drop: EAGAIN would need a later mac_tx_update(), and with an
+		 * idle ring no Tx completion would ever send one.
+		 */
+		freemsg(mp);
+		return (ENOMEM);
 	}
 	for (off = 0, m0 = mp; m0 != NULL; m0 = m0->b_cont) {
 		size_t mblen = MBLKL(m0);
@@ -10959,6 +10966,10 @@ iwm_attach(dev_info_t *dip, ddi_attach_cmd_t cmd)
 	return (DDI_SUCCESS);
 
 fail:
+	/* No interrupt handler may run once net80211 is detached. */
+	if (sc->sc_regh != NULL)
+		IWM_WRITE(sc, IWM_CSR_INT_MASK, 0);
+	iwm_intr_teardown(sc);
 	if (sc->sc_flags & IWM_FLAG_NET_ATTACHED)
 		ieee80211_detach(ic);
 	iwm_cleanup(sc);
@@ -11024,14 +11035,21 @@ iwm_detach(dev_info_t *dip, ddi_detach_cmd_t cmd)
 	    drv_usectohz(5000000)) != 0)
 		return (DDI_FAILURE);
 
+	/*
+	 * Quiet the device and wait out any running interrupt handler
+	 * before net80211 and the MAC handle go away: the handler delivers
+	 * frames and calls mac_tx_update() after dropping sc_mtx.
+	 */
+	mutex_enter(&sc->sc_mtx);
+	iwm_stop_device(sc);
+	mutex_exit(&sc->sc_mtx);
+	IWM_WRITE(sc, IWM_CSR_INT_MASK, 0);
+	iwm_intr_teardown(sc);
+
 	ddi_remove_minor_node(dip, NULL);
 	(void) mac_unregister(ic->ic_mach);
 	ic->ic_mach = NULL;
 	ieee80211_detach(ic);
-
-	mutex_enter(&sc->sc_mtx);
-	iwm_stop_device(sc);
-	mutex_exit(&sc->sc_mtx);
 
 	iwm_cleanup(sc);
 	cv_destroy(&sc->sc_task_cv);
