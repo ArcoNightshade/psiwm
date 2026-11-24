@@ -589,7 +589,8 @@ iwm_read_firmware(struct iwm_softc *sc)
 
 		case IWM_UCODE_TLV_API_CHANGES_SET: {
 			struct iwm_ucode_api *api;
-			int idx, i;
+			uint32_t idx;
+			int i;
 			if (tlv_len != sizeof (*api)) {
 				err = EINVAL;
 				goto parse_out;
@@ -610,16 +611,17 @@ iwm_read_firmware(struct iwm_softc *sc)
 
 		case IWM_UCODE_TLV_ENABLED_CAPABILITIES: {
 			struct iwm_ucode_capa *capa;
-			int idx, i;
+			uint32_t idx;
+			int i;
 			if (tlv_len != sizeof (*capa)) {
 				err = EINVAL;
 				goto parse_out;
 			}
 			capa = (struct iwm_ucode_capa *)tlv_data;
 			idx = le32toh(capa->api_index);
-			if (idx >= howmany(IWM_NUM_UCODE_TLV_CAPA, 32)) {
-				goto parse_out;
-			}
+			/* Unknown capability word: skip it (as Linux). */
+			if (idx >= howmany(IWM_NUM_UCODE_TLV_CAPA, 32))
+				break;
 			for (i = 0; i < 32; i++) {
 				if ((le32toh(capa->api_capa) & (1 << i)) == 0)
 					continue;
@@ -628,23 +630,27 @@ iwm_read_firmware(struct iwm_softc *sc)
 			break;
 		}
 
-		case IWM_UCODE_TLV_CMD_VERSIONS:
-			if (tlv_len % sizeof (struct iwm_fw_cmd_version)) {
-				tlv_len /= sizeof (struct iwm_fw_cmd_version);
-				tlv_len *= sizeof (struct iwm_fw_cmd_version);
-			}
+		case IWM_UCODE_TLV_CMD_VERSIONS: {
+			/*
+			 * Truncate a copy: tlv_len must stay intact to find
+			 * the next TLV (OpenBSD shrinks it in place).
+			 */
+			size_t cmd_len = tlv_len -
+			    tlv_len % sizeof (struct iwm_fw_cmd_version);
+
 			if (sc->n_cmd_versions != 0) {
 				err = EINVAL;
 				goto parse_out;
 			}
-			if (tlv_len > sizeof (sc->cmd_versions)) {
+			if (cmd_len > sizeof (sc->cmd_versions)) {
 				err = EINVAL;
 				goto parse_out;
 			}
-			memcpy(&sc->cmd_versions[0], tlv_data, tlv_len);
+			memcpy(&sc->cmd_versions[0], tlv_data, cmd_len);
 			sc->n_cmd_versions =
-			    tlv_len / sizeof (struct iwm_fw_cmd_version);
+			    cmd_len / sizeof (struct iwm_fw_cmd_version);
 			break;
+		}
 
 		case IWM_UCODE_TLV_SDIO_ADMA_ADDR:
 		case IWM_UCODE_TLV_FW_GSCAN_CAPA:
@@ -2419,7 +2425,8 @@ iwm_channel_id_to_txp(struct iwm_softc *sc, uint16_t ch_id)
 
 	for (i = 0; i < IWM_NUM_TXP_CH_GROUPS; i++) {
 		txp_chg = (void *)phy_db->calib_ch_group_txp[i].data;
-		if (!txp_chg)
+		if (!txp_chg || phy_db->calib_ch_group_txp[i].size <
+		    sizeof (*txp_chg))
 			return (0xff);
 		/*
 		 * Looking for the first channel group the max channel
@@ -2922,7 +2929,15 @@ iwm_sta_rx_agg(struct iwm_softc *sc, struct ieee80211_node *ni, uint8_t tid,
 	size_t cmdsize;
 
 	_NOTE(ARGUNUSED(timeout_val))
-	if (start && sc->sc_rx_ba_sessions >= IWM_MAX_RX_BA_SESSIONS) {
+	/*
+	 * Track firmware sessions per TID (OpenBSD counts only): a DELBA
+	 * for a TID the firmware never accepted must not send REMOVE or
+	 * decrement the count, and a renegotiated TID must not count twice.
+	 */
+	if (!start && (sc->sc_rx_ba_tidmask & (1 << tid)) == 0)
+		return (0);
+	if (start && (sc->sc_rx_ba_tidmask & (1 << tid)) == 0 &&
+	    sc->sc_rx_ba_sessions >= IWM_MAX_RX_BA_SESSIONS) {
 		iwm_delba(sc, ni, tid);
 		return (0);
 	}
@@ -2959,10 +2974,14 @@ iwm_sta_rx_agg(struct iwm_softc *sc, struct ieee80211_node *ni, uint8_t tid,
 		return (err);
 	}
 
-	if (start)
+	if (start && (sc->sc_rx_ba_tidmask & (1 << tid)) == 0) {
+		sc->sc_rx_ba_tidmask |= (1 << tid);
 		sc->sc_rx_ba_sessions++;
-	else if (sc->sc_rx_ba_sessions > 0)
-		sc->sc_rx_ba_sessions--;
+	} else if (!start) {
+		sc->sc_rx_ba_tidmask &= ~(1 << tid);
+		if (sc->sc_rx_ba_sessions > 0)
+			sc->sc_rx_ba_sessions--;
+	}
 
 	return (0);
 }
@@ -3019,8 +3038,12 @@ iwm_updateslot(struct ieee80211com *ic, int onoff)
 	struct iwm_softc *sc = (struct iwm_softc *)ic;
 
 	_NOTE(ARGUNUSED(onoff))
-	if (ic->ic_state == IEEE80211_S_RUN)
+	/* net80211 calls this without sc_mtx (newstate, Rx of beacons). */
+	mutex_enter(&sc->sc_mtx);
+	if (ic->ic_state == IEEE80211_S_RUN &&
+	    (sc->sc_task_pending & IWM_TASK_NEWSTATE) == 0)
 		iwm_add_task(sc, sc->sc_nswq, IWM_TASK_MAC_CTXT);
+	mutex_exit(&sc->sc_mtx);
 }
 
 /* illumos wme_update hook (OpenBSD ic_updateedca). */
@@ -3029,8 +3052,11 @@ iwm_updateedca(struct ieee80211com *ic)
 {
 	struct iwm_softc *sc = (struct iwm_softc *)ic;
 
-	if (ic->ic_state == IEEE80211_S_RUN)
+	mutex_enter(&sc->sc_mtx);
+	if (ic->ic_state == IEEE80211_S_RUN &&
+	    (sc->sc_task_pending & IWM_TASK_NEWSTATE) == 0)
 		iwm_add_task(sc, sc->sc_nswq, IWM_TASK_MAC_CTXT);
+	mutex_exit(&sc->sc_mtx);
 	return (0);
 }
 
@@ -3131,6 +3157,8 @@ iwm_sta_tx_agg(struct iwm_softc *sc, struct ieee80211_node *ni, uint8_t tid,
 			ASSERT(ring->cur == IWM_AGG_SSN_TO_TXQ_IDX(ssn));
 			ni->in_txseqs[tid] = ssn;
 		}
+		/* OpenBSD net80211 sets ba_winstart = SSN at ADDBA time. */
+		sc->sc_tx_ba_winstart[tid] = ssn;
 	}
 
 	if (isset(sc->sc_ucode_api, IWM_UCODE_TLV_API_STA_TYPE))
@@ -3341,11 +3369,13 @@ iwm_addba_stop(struct ieee80211_node *ni, struct ieee80211_tx_ampdu *tap)
 	sc->sc_addba_stop(ni, tap);
 
 	mutex_enter(&sc->sc_mtx);
-	if (tid < IWM_MAX_TID_COUNT &&
-	    (sc->tx_ba_queue_mask & (1 << qid)) != 0) {
+	if (tid < IWM_MAX_TID_COUNT) {
+		/* A start the BA task has not run yet is void now. */
 		sc->ba_tx.start_tidmask &= ~(1 << tid);
-		sc->ba_tx.stop_tidmask |= (1 << tid);
-		iwm_add_task(sc, sc->sc_nswq, IWM_TASK_BA);
+		if ((sc->tx_ba_queue_mask & (1 << qid)) != 0) {
+			sc->ba_tx.stop_tidmask |= (1 << tid);
+			iwm_add_task(sc, sc->sc_nswq, IWM_TASK_BA);
+		}
 	}
 	mutex_exit(&sc->sc_mtx);
 }
@@ -3454,7 +3484,12 @@ iwm_parse_nvm_data(struct iwm_softc *sc, const uint16_t *nvm_hw,
 		uint16_t lar_offset = data->nvm_version < 0xE39 ?
 		    IWM_NVM_LAR_OFFSET_8000_OLD : IWM_NVM_LAR_OFFSET_8000;
 
-		lar_config = le16_to_cpup(regulatory + lar_offset);
+		/* n_regulatory is in bytes; OpenBSD does not check it. */
+		if ((size_t)(lar_offset + 1) * sizeof (uint16_t) <=
+		    (size_t)n_regulatory)
+			lar_config = le16_to_cpup(regulatory + lar_offset);
+		else
+			lar_config = 0;
 		data->lar_enabled = !!(lar_config &
 		    IWM_NVM_LAR_ENABLED_8000);
 		data->n_hw_addrs = le16_to_cpup(nvm_sw + IWM_N_HW_ADDRS_8000);
@@ -3485,7 +3520,8 @@ iwm_parse_nvm_data(struct iwm_softc *sc, const uint16_t *nvm_hw,
 	} else
 		iwm_init_channel_map(sc, &regulatory[IWM_NVM_CHANNELS_8000],
 		    iwm_nvm_channels_8000,
-		    MIN(n_regulatory, nitems(iwm_nvm_channels_8000)));
+		    MIN(n_regulatory / (int)sizeof (uint16_t),
+		    (int)nitems(iwm_nvm_channels_8000)));
 
 	/*
 	 * TODO: this value will prevent some checks from failing, we need
@@ -7478,6 +7514,7 @@ iwm_deauth(struct iwm_softc *sc)
 		in->tid_disable_ampdu = 0xffff;
 		sc->sc_flags &= ~IWM_FLAG_STA_ACTIVE;
 		sc->sc_rx_ba_sessions = 0;
+		sc->sc_rx_ba_tidmask = 0;
 		sc->ba_rx.start_tidmask = 0;
 		sc->ba_rx.stop_tidmask = 0;
 		sc->tx_ba_queue_mask = 0;
@@ -7627,13 +7664,14 @@ iwm_run_stop(struct iwm_softc *sc)
 	 */
 	for (tid = 0; tid < IWM_MAX_TID_COUNT && sc->sc_rx_ba_sessions > 0;
 	    tid++) {
-		if (ni->in_rx_ampdu[tid].rxa_flags & IEEE80211_AGGR_XCHGPEND) {
+		if (sc->sc_rx_ba_tidmask & (1 << tid)) {
 			err = iwm_sta_rx_agg(sc, ni, tid, 0, 0, 0, 0);
 			if (err)
 				return (err);
 		}
 	}
 	sc->sc_rx_ba_sessions = 0;
+	sc->sc_rx_ba_tidmask = 0;
 	for (tid = 0; tid < IWM_MAX_TID_COUNT; tid++) {
 		int qid = IWM_FIRST_AGG_TX_QUEUE + tid;
 		if ((sc->tx_ba_queue_mask & (1 << qid)) == 0)
@@ -8141,6 +8179,7 @@ out:
 			(void) sc->sc_newstate(ic, nstate, arg);
 			if (nstate == IEEE80211_S_RUN) {
 				mac_link_update(ic->ic_mach, LINK_STATE_UP);
+				mac_tx_update(ic->ic_mach);
 				ieee80211_start_watchdog(ic, 1);
 			} else if (ostate == IEEE80211_S_RUN) {
 				mac_link_update(ic->ic_mach, LINK_STATE_DOWN);
@@ -8933,7 +8972,7 @@ iwm_stop(struct iwm_softc *sc)
 	struct ieee80211com *ic = &sc->sc_ic;
 	struct iwm_node *in;
 	mblk_t *rx;
-	int i;
+	int i, oactive;
 
 	ASSERT(RW_WRITE_HELD(&sc->sc_rwlock));
 	/* The net80211 watchdog may call back into iwm_newstate(). */
@@ -8965,6 +9004,7 @@ iwm_stop(struct iwm_softc *sc)
 		sc->sc_cmd_resp_pkt[i] = NULL;
 		sc->sc_cmd_resp_len[i] = 0;
 	}
+	oactive = (sc->sc_flags & IWM_FLAG_OACTIVE) != 0;
 	sc->sc_flags &= ~(IWM_FLAG_RUNNING | IWM_FLAG_OACTIVE);
 
 	in = (void *)ic->ic_bss;
@@ -8984,6 +9024,7 @@ iwm_stop(struct iwm_softc *sc)
 	sc->sc_flags &= ~IWM_FLAG_TXFLUSH;
 
 	sc->sc_rx_ba_sessions = 0;
+	sc->sc_rx_ba_tidmask = 0;
 	sc->ba_rx.start_tidmask = 0;
 	sc->ba_rx.stop_tidmask = 0;
 	sc->tx_ba_queue_mask = 0;
@@ -9015,6 +9056,9 @@ iwm_stop(struct iwm_softc *sc)
 	 */
 	(void) sc->sc_newstate(ic, IEEE80211_S_INIT, -1);
 	mac_link_update(ic->ic_mach, LINK_STATE_DOWN);
+	/* Unblock a flow-controlled client; m_tx now drops its frames. */
+	if (oactive)
+		mac_tx_update(ic->ic_mach);
 
 	mutex_enter(&sc->sc_mtx);
 	sc->ns_nstate = IEEE80211_S_INIT;
@@ -9934,7 +9978,16 @@ iwm_send(struct ieee80211com *ic, mblk_t *mp, uint8_t type)
 		freemsg(mp);
 		return (ENXIO);
 	}
-	if (isdata && ((sc->sc_flags & IWM_FLAG_TXFLUSH) || sc->qfullmsk)) {
+	if (isdata && (sc->sc_flags & IWM_FLAG_TXFLUSH)) {
+		/*
+		 * Flushing happens while leaving RUN: drop rather than block
+		 * the MAC client, since no Tx completion may follow.
+		 */
+		mutex_exit(&sc->sc_mtx);
+		freemsg(mp);
+		return (ENXIO);
+	}
+	if (isdata && sc->qfullmsk) {
 		/* Retried after iwm_clear_oactive() calls mac_tx_update(). */
 		sc->sc_flags |= IWM_FLAG_OACTIVE;
 		sc->sc_noxmtbuf++;

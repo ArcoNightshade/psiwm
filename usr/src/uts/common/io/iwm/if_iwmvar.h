@@ -545,6 +545,7 @@ struct iwm_softc {
 
 	int sc_tx_timer[IWM_MAX_QUEUES];
 	int sc_rx_ba_sessions;
+	uint32_t sc_rx_ba_tidmask;	/* TIDs with a firmware Rx BA session */
 	int tx_ba_queue_mask;
 
 	int sc_scan_last_antenna;
