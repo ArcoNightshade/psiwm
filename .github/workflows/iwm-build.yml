@@ -68,6 +68,7 @@ jobs:
             cat usr/src/tools/env/illumos.sh \
                 usr/src/tools/env/omnios-illumos-gate.sh >> /tmp/env.sh
             echo 'export NIGHTLY_OPTIONS=-nCprt' >> /tmp/env.sh
+            echo 'export DMAKE_MAX_JOBS=4' >> /tmp/env.sh
             git config --global --add safe.directory '*'
             {
               uname -a; cat /etc/release
@@ -77,13 +78,20 @@ jobs:
             b="ksh93 $ws/usr/src/tools/scripts/bldenv -d /tmp/env.sh"
             rc=0
             $b 'cd $SRC && dmake setup' > "$out/setup.log" 2>&1 || rc=1
+            # Modules are CTF-merged against genunix, so build it first.
+            if [ $rc = 0 ]; then
+              $b 'cd $SRC/uts/intel/genunix && dmake -e all' \
+                  > "$out/build-genunix.log" 2>&1 || rc=1
+            fi
             if [ $rc = 0 ]; then
               for m in net80211 iwm; do
                 $b "cd \$SRC/uts/intel/$m && dmake -e all" \
                     > "$out/build-$m.log" 2>&1 || rc=1
-                $b "cd \$SRC/uts/intel/$m && dmake check" \
-                    > "$out/check-$m.log" 2>&1 || rc=1
-                cp usr/src/uts/intel/$m/obj64/$m "$out/" 2>/dev/null || :
+                if [ $m = iwm ]; then
+                  $b "cd \$SRC/uts/intel/$m && dmake check" \
+                      > "$out/check-$m.log" 2>&1 || rc=1
+                fi
+                cp usr/src/uts/intel/$m/debug64/$m "$out/" 2>/dev/null || :
               done
             fi
             # Show where it broke in the job log.

@@ -42,7 +42,6 @@ static uint32_t iwm_read_prph(struct iwm_softc *sc, uint32_t addr);
 static void iwm_write_prph_unlocked(struct iwm_softc *sc, uint32_t addr,
     uint32_t val);
 static void iwm_write_prph(struct iwm_softc *sc, uint32_t addr, uint32_t val);
-static void iwm_write_prph64(struct iwm_softc *sc, uint64_t addr, uint64_t val);
 static int iwm_read_mem(struct iwm_softc *sc, uint32_t addr, void *buf,
     int dwords);
 static int iwm_write_mem(struct iwm_softc *sc, uint32_t addr, const void *buf,
@@ -277,7 +276,6 @@ static void iwm_power_build_cmd(struct iwm_softc *sc, struct iwm_node *in,
     struct iwm_mac_power_cmd *cmd);
 static int iwm_power_mac_update_mode(struct iwm_softc *sc, struct iwm_node *in);
 static int iwm_power_update_device(struct iwm_softc *sc);
-static int iwm_enable_beacon_filter(struct iwm_softc *sc, struct iwm_node *in);
 static int iwm_disable_beacon_filter(struct iwm_softc *sc);
 static int iwm_add_sta_cmd(struct iwm_softc *sc, struct iwm_node *in,
     int update);

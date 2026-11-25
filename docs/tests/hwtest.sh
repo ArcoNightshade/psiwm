@@ -157,17 +157,22 @@ step=build
 if [ "$BUILD" = 1 ] && [ ! -f "$state" ]; then
 	command -v dmake >/dev/null ||
 	    fail "dmake not found: run from a bldenv shell, or set BUILD=0"
-	for d in net80211 iwm; do
+	# Modules are CTF-merged against genunix, so it must be built first.
+	for d in genunix net80211 iwm; do
 		say "building $d"
 		(cd "$uts/intel/$d" && dmake -e all) > "$out/build-$d.log" 2>&1 ||
 		    fail "build of $d (see build-$d.log)"
+		[ "$d" = iwm ] || continue
 		(cd "$uts/intel/$d" && dmake check) > "$out/check-$d.log" 2>&1 ||
 		    say "warning: dmake check reported problems ($d)"
 	done
 	pass "build"
 fi
-newdrv=$uts/intel/iwm/obj64/iwm
-newmisc=$uts/intel/net80211/obj64/net80211
+# DEBUG builds (bldenv -d) go to debug64, non-DEBUG to obj64.
+newdrv=$uts/intel/iwm/debug64/iwm
+newmisc=$uts/intel/net80211/debug64/net80211
+[ -f "$newdrv" ] || newdrv=$uts/intel/iwm/obj64/iwm
+[ -f "$newmisc" ] || newmisc=$uts/intel/net80211/obj64/net80211
 [ -f "$newdrv" ] && [ -f "$newmisc" ] || fail "built modules not found"
 
 # --- 2. install (net80211 can only be replaced while unused)

@@ -24,5 +24,5 @@ CYCLES=10
 
 # Build the modules first (needs the illumos build environment: run the
 # script from a shell set up with "bldenv <your env file>").  Set to 0 to use
-# modules you already built (obj64 directories in the tree).
+# modules you already built (debug64 or obj64 directories in the tree).
 BUILD=1

@@ -810,13 +810,6 @@ iwm_write_prph(struct iwm_softc *sc, uint32_t addr, uint32_t val)
 	iwm_write_prph_unlocked(sc, addr, val);
 }
 
-static void
-iwm_write_prph64(struct iwm_softc *sc, uint64_t addr, uint64_t val)
-{
-	iwm_write_prph(sc, (uint32_t)addr, val & 0xffffffff);
-	iwm_write_prph(sc, (uint32_t)addr + 4, val >> 32);
-}
-
 static int
 iwm_read_mem(struct iwm_softc *sc, uint32_t addr, void *buf, int dwords)
 {
@@ -5908,24 +5901,6 @@ iwm_power_update_device(struct iwm_softc *sc)
 
 	return (iwm_send_cmd_pdu(sc,
 	    IWM_POWER_TABLE_CMD, 0, sizeof (cmd), &cmd));
-}
-
-static int
-iwm_enable_beacon_filter(struct iwm_softc *sc, struct iwm_node *in)
-{
-	struct iwm_beacon_filter_cmd cmd = {
-		IWM_BF_CMD_CONFIG_DEFAULTS,
-		.bf_enable_beacon_filter = htole32(1),
-	};
-	int err;
-
-	iwm_beacon_filter_set_cqm_params(sc, in, &cmd);
-	err = iwm_beacon_filter_send_cmd(sc, &cmd);
-
-	if (err == 0)
-		sc->sc_bf.bf_enabled = 1;
-
-	return (err);
 }
 
 static int
