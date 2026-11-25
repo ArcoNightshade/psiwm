@@ -38,25 +38,37 @@ jobs:
             set -x
             # pkg exits 4 when there is nothing to install.
             pkg install -q developer/illumos-tools || [ $? -eq 4 ]
+            # The build runs git in the synced checkout, owned by another uid.
+            git config --global --add safe.directory '*'
             mkdir -p /opt/onbld
             cd /opt/onbld
-            for u in \
-              https://mirrors.omnios.org/illumos/on-closed-bins.i386.tar.bz2 \
-              https://us-central.manta.mnx.io/Joyent_Dev/public/build/illumos/on-closed-bins.i386.tar.bz2
-            do
-              curl -fsSL "$u" | bzip2 -dc | tar xf - && break
-            done
-            ls -d /opt/onbld/closed
+            if [ -z "$(ls -A /opt/onbld/closed 2>/dev/null)" ]; then
+              for u in \
+                https://us-central.manta.mnx.io/Joyent_Dev/public/build/illumos/on-closed-bins.i386.tar.bz2 \
+                https://download.joyent.com/pub/build/illumos/on-closed-bins.i386.tar.bz2 \
+                https://mirrors.omnios.org/illumos/on-closed-bins.i386.tar.bz2
+              do
+                rm -f /tmp/closed.tbz
+                if curl -fsSL -o /tmp/closed.tbz "$u" &&
+                    bzip2 -t /tmp/closed.tbz; then
+                  bzip2 -dc /tmp/closed.tbz | tar xf - && break
+                fi
+              done
+            fi
+            ls /opt/onbld/closed | head
+            [ -n "$(ls -A /opt/onbld/closed 2>/dev/null)" ]
           run: |
             set -x
             ws=$(pwd)
             out=$ws/iwm-build-out
             mkdir -p "$out"
             # Upstream env file plus the OmniOS overlay, as OmniOS builds it.
+            # CODEMGR_WS first: illumos.sh derives SRC and friends from it.
+            echo "export CODEMGR_WS=$ws" > /tmp/env.sh
             cat usr/src/tools/env/illumos.sh \
-                usr/src/tools/env/omnios-illumos-gate.sh > /tmp/env.sh
-            echo "export CODEMGR_WS=$ws" >> /tmp/env.sh
+                usr/src/tools/env/omnios-illumos-gate.sh >> /tmp/env.sh
             echo 'export NIGHTLY_OPTIONS=-nCprt' >> /tmp/env.sh
+            git config --global --add safe.directory '*'
             {
               uname -a; cat /etc/release
               ls -d /opt/gcc-* /usr/jdk/* 2>&1
