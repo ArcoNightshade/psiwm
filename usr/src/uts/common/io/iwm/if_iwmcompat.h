@@ -54,7 +54,10 @@ typedef uint64_t	bus_addr_t;
 #define	isclr(a, i)	(((a)[(i) / NBBY] & (1 << ((i) % NBBY))) == 0)
 #endif
 
-#define	DELAY(us)	drv_usecwait(us)
+/* <sys/param.h> already has DELAY() */
+#ifndef DELAY
+#define	DELAY(n)	drv_usecwait(n)
+#endif
 
 /* OpenBSD net80211 EDCA access categories have illumos WME's values. */
 #define	EDCA_AC_BE	WME_AC_BE
