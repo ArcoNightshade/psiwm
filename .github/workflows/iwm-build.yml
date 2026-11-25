@@ -92,7 +92,11 @@ jobs:
               grep -n -i -E 'error|warning|fatal|not found|stop\.' "$f" |
                   head -40
             done
-            exit $rc
+            # Exit 0 so the VM copies the logs back; the next step fails.
+            echo $rc > "$out/status"
+
+      - name: Check build result
+        run: test "$(cat iwm-build-out/status 2>/dev/null)" = 0
 
       - name: Upload modules and logs
         if: always()
