@@ -83,14 +83,16 @@ jobs:
                     > "$out/build-$m.log" 2>&1 || rc=1
                 $b "cd \$SRC/uts/intel/$m && dmake check" \
                     > "$out/check-$m.log" 2>&1 || rc=1
-                cp usr/src/uts/intel/$m/obj64/$m "$out/" 2>/dev/null
+                cp usr/src/uts/intel/$m/obj64/$m "$out/" 2>/dev/null || :
               done
             fi
             # Show where it broke in the job log.
             for f in "$out"/*.log; do
               echo "==== $f"
               grep -n -i -E 'error|warning|fatal|not found|stop\.' "$f" |
-                  head -40
+                  head -60 || :
+              echo "---- last lines"
+              tail -25 "$f" || :
             done
             # Exit 0 so the VM copies the logs back; the next step fails.
             echo $rc > "$out/status"
