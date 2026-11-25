@@ -157,8 +157,10 @@ step=build
 if [ "$BUILD" = 1 ] && [ ! -f "$state" ]; then
 	command -v dmake >/dev/null ||
 	    fail "dmake not found: run from a bldenv shell, or set BUILD=0"
-	# Modules are CTF-merged against genunix, so it must be built first.
-	for d in genunix net80211 iwm; do
+	# Skip CTF uniquification against genunix (it would need genunix
+	# built, and the modules run on the installed kernel anyway).
+	export NO_GENUNIX_UNIQUIFY=
+	for d in net80211 iwm; do
 		say "building $d"
 		(cd "$uts/intel/$d" && dmake -e all) > "$out/build-$d.log" 2>&1 ||
 		    fail "build of $d (see build-$d.log)"

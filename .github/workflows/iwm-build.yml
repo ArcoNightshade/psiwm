@@ -69,6 +69,9 @@ jobs:
                 usr/src/tools/env/omnios-illumos-gate.sh >> /tmp/env.sh
             echo 'export NIGHTLY_OPTIONS=-nCprt' >> /tmp/env.sh
             echo 'export DMAKE_MAX_JOBS=4' >> /tmp/env.sh
+            # Do not uniquify CTF against genunix: the modules are meant
+            # to be dropped onto another system's kernel (Tribblix).
+            echo 'export NO_GENUNIX_UNIQUIFY=' >> /tmp/env.sh
             git config --global --add safe.directory '*'
             {
               uname -a; cat /etc/release
@@ -78,11 +81,6 @@ jobs:
             b="ksh93 $ws/usr/src/tools/scripts/bldenv -d /tmp/env.sh"
             rc=0
             $b 'cd $SRC && dmake setup' > "$out/setup.log" 2>&1 || rc=1
-            # Modules are CTF-merged against genunix, so build it first.
-            if [ $rc = 0 ]; then
-              $b 'cd $SRC/uts/intel/genunix && dmake -e all' \
-                  > "$out/build-genunix.log" 2>&1 || rc=1
-            fi
             if [ $rc = 0 ]; then
               for m in net80211 iwm; do
                 $b "cd \$SRC/uts/intel/$m && dmake -e all" \
