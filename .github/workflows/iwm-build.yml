@@ -1,0 +1,91 @@
+#
+# Build the iwm driver and net80211 with the real illumos toolchain in an
+# OmniOS VM, run "dmake check", and publish the modules and logs as an
+# artifact.  Free on public repositories (standard GitHub-hosted runner).
+#
+name: iwm build
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'usr/src/uts/common/io/iwm/**'
+      - 'usr/src/uts/common/io/net80211/**'
+      - 'usr/src/uts/intel/iwm/**'
+      - 'usr/src/uts/intel/net80211/**'
+      - 'usr/src/uts/common/sys/net80211*'
+      - '.github/workflows/iwm-build.yml'
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 300
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Host checks (firmware, rate control, type check)
+        run: docs/tests/run.sh
+
+      - name: Build in OmniOS
+        uses: vmactions/omnios-vm@v1
+        with:
+          mem: 8192
+          cpu: 4
+          usesh: true
+          copyback: true
+          prepare: |
+            set -x
+            # pkg exits 4 when there is nothing to install.
+            pkg install -q developer/illumos-tools || [ $? -eq 4 ]
+            mkdir -p /opt/onbld
+            cd /opt/onbld
+            for u in \
+              https://mirrors.omnios.org/illumos/on-closed-bins.i386.tar.bz2 \
+              https://us-central.manta.mnx.io/Joyent_Dev/public/build/illumos/on-closed-bins.i386.tar.bz2
+            do
+              curl -fsSL "$u" | bzip2 -dc | tar xf - && break
+            done
+            ls -d /opt/onbld/closed
+          run: |
+            set -x
+            ws=$(pwd)
+            out=$ws/iwm-build-out
+            mkdir -p "$out"
+            # Upstream env file plus the OmniOS overlay, as OmniOS builds it.
+            cat usr/src/tools/env/illumos.sh \
+                usr/src/tools/env/omnios-illumos-gate.sh > /tmp/env.sh
+            echo "export CODEMGR_WS=$ws" >> /tmp/env.sh
+            echo 'export NIGHTLY_OPTIONS=-nCprt' >> /tmp/env.sh
+            {
+              uname -a; cat /etc/release
+              ls -d /opt/gcc-* /usr/jdk/* 2>&1
+              perl -v | head -2; python3 --version
+            } > "$out/environment.txt" 2>&1
+            b="ksh93 $ws/usr/src/tools/scripts/bldenv -d /tmp/env.sh"
+            rc=0
+            $b 'cd $SRC && dmake setup' > "$out/setup.log" 2>&1 || rc=1
+            if [ $rc = 0 ]; then
+              for m in net80211 iwm; do
+                $b "cd \$SRC/uts/intel/$m && dmake -e all" \
+                    > "$out/build-$m.log" 2>&1 || rc=1
+                $b "cd \$SRC/uts/intel/$m && dmake check" \
+                    > "$out/check-$m.log" 2>&1 || rc=1
+                cp usr/src/uts/intel/$m/obj64/$m "$out/" 2>/dev/null
+              done
+            fi
+            # Show where it broke in the job log.
+            for f in "$out"/*.log; do
+              echo "==== $f"
+              grep -n -i -E 'error|warning|fatal|not found|stop\.' "$f" |
+                  head -40
+            done
+            exit $rc
+
+      - name: Upload modules and logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: iwm-build
+          path: iwm-build-out/
+          if-no-files-found: warn
